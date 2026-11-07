@@ -86,13 +86,9 @@ _STOP = object()  # sentinel placed on the packet queue when capture ends
 
 
 class LiveRecordingManager(QObject):
-    """Runs one live lecture: microphone → batches → Gemini → saved segments.
+    """Runs one live lecture: microphone → batches → Gemini → transcript.
 
-    This is a singleton: only one manager (and so at most one live lecture)
-    exists at a time. Construct it once at startup, then fetch it anywhere
-    with ``LiveRecordingManager.instance()``. Constructing a second one raises
-    ``RuntimeError``; call ``release()`` first if you really need to replace it
-    (e.g. in tests).
+    Only one instance is allowed at a time, and it must be created on the GUI
     """
 
     _instance: Optional["LiveRecordingManager"] = None
