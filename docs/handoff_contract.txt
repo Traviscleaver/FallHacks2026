@@ -1,157 +1,193 @@
-Overview
-All three components share one audio format: 16 kHz, mono, signed 16-bit little-endian
-PCM. Every position on the timeline is a sample offset from the start of the lecture.
-Audio flows from the microphone ( AudioSource ) into batches, then to the speech-totext session ( Transcriber ), then into the saved transcript. LiveRecordingManager
-owns that flow and runs one lecture at a time.
+LIVE RECORDING INTERFACES
+=========================
+
+OVERVIEW
+--------
+All three components share one audio format: 16 kHz, mono, signed 16-bit
+little-endian PCM. Every position on the timeline is a sample offset from the
+start of the lecture.
+
+Audio flows from the microphone (AudioSource) into batches, then to the
+speech-to-text session (Transcriber), then into the saved transcript.
+LiveRecordingManager owns that flow and runs one lecture at a time.
+
+Data flow:
+
+  AudioSource --> Capture thread --> Queue --> Sender thread
+                                                 |        |
+                                     save packets|        |send_batch()
+                                                 v        v
+                                               Store <-- Transcriber
+                                                   final segments
+
 The capture thread only reads and enqueues, so a slow or dropped transcriber
 connection becomes a recorded gap rather than lost audio.
-LiveRecordingManager ( live_recording.py )
-A Qt QObject singleton that runs one lecture at a time, using two daemon threads.
-Capture thread: calls AudioSource.read() , gives each chunk a sequence number
-and a sample offset (the authoritative timeline), and puts it on a queue. It never waits
-on the network or disk, so recording continues even when transcription falls behind.
-Sender thread: saves each packet to the store, groups packets into batches of about
-batch_seconds , and calls Transcriber.send_batch() . It reconnects with
-exponential backoff and records any audio that never reached the transcriber as a
-gap.
-live recording data flow · 2 threads, 1 queue
-Live Recording Interfaces
-Page 1 of 6
+
+
+LIVERECORDINGMANAGER (live_recording.py)
+----------------------------------------
+A Qt QObject singleton that runs one lecture at a time, using two daemon
+threads:
+
+  - Capture thread: calls AudioSource.read(), gives each chunk a sequence
+    number and a sample offset (the authoritative timeline), and puts it on a
+    queue. It never waits on the network or disk, so recording continues even
+    when transcription falls behind.
+
+  - Sender thread: saves each packet to the store, groups packets into batches
+    of about batch_seconds, and calls Transcriber.send_batch(). It reconnects
+    with exponential backoff and records any audio that never reached the
+    transcriber as a gap.
+
 Methods
-Method Contract
-__init__(audio_source, transcriber,
-store=None, *, batch_seconds=1.0,
-finish_timeout=10.0,
-max_backoff=10.0, parent=None)
-Creates the singleton. Create it on the GUI
-thread. Raises RuntimeError if an instance
-already exists. Does not open the source or
-connect the transcriber. Status starts as IDLE .
-If store is None , nothing is persisted.
-instance() (classmethod) Returns the singleton. Raises RuntimeError if
-none has been created.
-has_instance() (classmethod) Returns True if a singleton exists. Never
-raises.
-release() (classmethod) Clears the singleton reference so a new one
-can be built. Raises RuntimeError if a lecture
-is active. Does not stop or close anything.
-status (property) Returns the current LectureStatus : idle,
-connecting, recording, reconnecting, stopping,
-stopped or error.
-lecture_id (property) Returns the id of the current or last lecture. It
-is "" before the first start() .
-is_active() Returns True while the status is CONNECTING ,
-RECORDING , RECONNECTING or STOPPING .
-start(lecture_id, device_id=None) Opens the mic, starts both threads, and
-returns immediately. Raises RuntimeError if a
-lecture is already active (the check is atomic).
-Calling it again after STOPPED or ERROR is
-allowed and resets all counters. Emits
-CONNECTING , then RECORDING when the
-transcriber connects, or RECONNECTING if it
-can't (capture runs either way). If the mic fails
-to open, it does not raise: it emits
-processing_error ( mic_permission_denied
-/ mic_unavailable ), sets status to ERROR , and
-starts no threads.
-Live Recording Interfaces
-Page 2 of 6
+~~~~~~~
+__init__(audio_source, transcriber, store=None, *, batch_seconds=1.0,
+         finish_timeout=10.0, max_backoff=10.0, parent=None)
+    Creates the singleton. Create it on the GUI thread. Raises RuntimeError if
+    an instance already exists. Does not open the source or connect the
+    transcriber. Status starts as IDLE. If store is None, nothing is persisted.
+
+instance()  (classmethod)
+    Returns the singleton. Raises RuntimeError if none has been created.
+
+has_instance()  (classmethod)
+    Returns True if a singleton exists. Never raises.
+
+release()  (classmethod)
+    Clears the singleton reference so a new one can be built. Raises
+    RuntimeError if a lecture is active. Does not stop or close anything.
+
+status  (property)
+    Returns the current LectureStatus: idle, connecting, recording,
+    reconnecting, stopping, stopped or error.
+
+lecture_id  (property)
+    Returns the id of the current or last lecture. It is "" before the first
+    start().
+
+is_active()
+    Returns True while the status is CONNECTING, RECORDING, RECONNECTING or
+    STOPPING.
+
+start(lecture_id, device_id=None)
+    Opens the mic, starts both threads, and returns immediately. Raises
+    RuntimeError if a lecture is already active (the check is atomic). Calling
+    it again after STOPPED or ERROR is allowed and resets all counters. Emits
+    CONNECTING, then RECORDING when the transcriber connects, or RECONNECTING
+    if it can't (capture runs either way). If the mic fails to open, it does
+    not raise: it emits processing_error (mic_permission_denied /
+    mic_unavailable), sets status to ERROR, and starts no threads.
+
+stop(timeout=None)
+    Blocks. Does nothing if no lecture is active. Otherwise sets STOPPING,
+    stops capture, and sends the last partial batch. Then calls
+    transcriber.finish(finish_timeout) and close(), closes any open gap, and
+    sets STOPPED. If the timeout runs out, emits stop_timeout (not retryable)
+    and keeps the partial transcript.
+
+stop_async()
+    Runs stop() on a background thread and returns immediately. Wait for
+    status_changed(..., "stopped").
+
 Signals
-Each signal passes lecture_id as its first argument. They can fire from worker threads;
-Qt delivers them on the GUI thread.
-Method Contract
-stop(timeout=None) Blocks. Does nothing if no lecture is active.
-Otherwise sets STOPPING , stops capture, and
-sends the last partial batch. Then calls
-transcriber.finish(finish_timeout) and
-close() , closes any open gap, and sets
-STOPPED . If the timeout runs out, emits
-stop_timeout (not retryable) and keeps the
-partial transcript.
-stop_async() Runs stop() on a background thread and
-returns immediately. Wait for
-status_changed(..., "stopped") .
-Signal Notes
-status_changed(id, status_str)
-audio_level(id, 0.0–1.0) About every 100 ms
-transcript_interim(id, text) Replaces the previous interim text; not
-saved
-transcript_final(id, TranscriptSegment) Fires after the segment is saved to the
-store
-gap_recorded(id, start_sample,
-end_sample)
-processing_lag(id, seconds)
-processing_error(id, code, message,
-retryable)
-Live Recording Interfaces
-Page 3 of 6
+~~~~~~~
+Each signal passes lecture_id as its first argument. They can fire from worker
+threads; Qt delivers them on the GUI thread.
+
+  status_changed(id, status_str)
+  audio_level(id, 0.0-1.0)                   About every 100 ms
+  transcript_interim(id, text)               Replaces the previous interim
+                                             text; not saved
+  transcript_final(id, TranscriptSegment)    Fires after the segment is saved
+                                             to the store
+  gap_recorded(id, start_sample, end_sample)
+  processing_lag(id, seconds)
+  processing_error(id, code, message, retryable)
+
 Error codes
-AudioSource (Protocol, audio_recording.py )
-A pull-based microphone. The manager depends only on this interface, so a test can pass
-in a fake source. The implementation is SoundDeviceAudioSource . open() runs on the
-thread that calls start() ; read() and close() run on the capture thread.
-Retryable Code
-Yes mic_failed , transcriber_connect_failed ,
-transcriber_disconnected , transcriber_error ,
-segment_save_failed
-No finish_failed , stop_timeout ,
-audio_save_failed , storage_failed
-Method Contract
-open(device_id: Optional[str]) Starts capturing. None or "" means the default
-device; otherwise pass an id from
-list_input_devices() or a device name. Raises
-PermissionError if access is denied, and any
-other exception (the implementation uses
-OSError ) if the device is missing, busy or has no
-usable format. Calling it again must replace the
-open stream.
-read(timeout: float) -> bytes Returns the next chunk in the shared format, or
-b"" if nothing arrived before the timeout. Chunk
-length can vary (the implementation returns up to
-1,600 samples, about 100 ms). An exception means
-the device is dead: capture stops and the manager
-emits mic_failed . Must not block much longer
-than timeout (the manager passes 0.2 s). The
-source converts to the shared format itself; the
-implementation downmixes and resamples here
-when needed.
-Live Recording Interfaces
-Page 4 of 6
+~~~~~~~~~~~
+  Retryable:     mic_failed, transcriber_connect_failed,
+                 transcriber_disconnected, transcriber_error,
+                 segment_save_failed
+  Not retryable: finish_failed, stop_timeout, audio_save_failed,
+                 storage_failed
+
+
+AUDIOSOURCE (Protocol, audio_recording.py)
+------------------------------------------
+A pull-based microphone. The manager depends only on this interface, so a test
+can pass in a fake source. The implementation is SoundDeviceAudioSource.
+open() runs on the thread that calls start(); read() and close() run on the
+capture thread.
+
+open(device_id: Optional[str])
+    Starts capturing. None or "" means the default device; otherwise pass an
+    id from list_input_devices() or a device name. Raises PermissionError if
+    access is denied, and any other exception (the implementation uses
+    OSError) if the device is missing, busy or has no usable format. Calling
+    it again must replace the open stream.
+
+read(timeout: float) -> bytes
+    Returns the next chunk in the shared format, or b"" if nothing arrived
+    before the timeout. Chunk length can vary (the implementation returns up
+    to 1,600 samples, about 100 ms). An exception means the device is dead:
+    capture stops and the manager emits mic_failed. Must not block much longer
+    than timeout (the manager passes 0.2 s). The source converts to the shared
+    format itself; the implementation downmixes and resamples here when
+    needed.
+
+close()
+    Releases the device. Must be safe to call more than once and when nothing
+    is open. The manager calls it when the capture thread exits and ignores
+    any errors.
+
 Helper functions
-list_input_devices() -> [(device_id, name)] lists the input devices.
-rms_level(pcm) -> 0.0–1.0 computes the level used for audio_level .
-Transcriber (Protocol, audio_transcription.py )
-A streaming speech-to-text session. The implementation is GeminiTranscriber . The
-manager calls all of its methods from the sender thread, but the callbacks can fire on any
-thread.
-Method Contract
-close() Releases the device. Must be safe to call more than
-once and when nothing is open. The manager calls
-it when the capture thread exits and ignores any
-errors.
-Method Contract
-connect(on_result, on_error) Opens a session and blocks until it's ready.
-Raises if it can't connect; the manager
-treats that as retryable and backs off. May
-be called again after an async error without
-close() first, so it must start from a clean
-state.
-send_batch(packets:
-Sequence[AudioPacket])
-Sends consecutive packets in order. Raises
-on connection failure; the manager then
-calls close() , marks the audio as a gap, and
-reconnects later. An empty sequence does
-nothing. Should return quickly. The Gemini
-version times out after 5 s and raises
-ConnectionError after an async failure.
-Live Recording Interfaces
-Page 5 of 6
+~~~~~~~~~~~~~~~~
+  list_input_devices() -> [(device_id, name)]   Lists the input devices.
+  rms_level(pcm) -> 0.0-1.0                      Computes the level used for
+                                                 audio_level.
+
+
+TRANSCRIBER (Protocol, audio_transcription.py)
+----------------------------------------------
+A streaming speech-to-text session. The implementation is GeminiTranscriber.
+The manager calls all of its methods from the sender thread, but the callbacks
+can fire on any thread.
+
+connect(on_result, on_error)
+    Opens a session and blocks until it's ready. Raises if it can't connect;
+    the manager treats that as retryable and backs off. May be called again
+    after an async error without close() first, so it must start from a clean
+    state.
+
+send_batch(packets: Sequence[AudioPacket])
+    Sends consecutive packets in order. Raises on connection failure; the
+    manager then calls close(), marks the audio as a gap, and reconnects
+    later. An empty sequence does nothing. Should return quickly. The Gemini
+    version times out after 5 s and raises ConnectionError after an async
+    failure.
+
+finish(timeout: float)
+    Tells the service the stream has ended and blocks until every pending
+    final result has been delivered through on_result, or until the timeout.
+    Called once during stop(), and only if connected. If it raises, the
+    manager reports finish_failed and continues. The Gemini version returns
+    quietly on timeout.
+
+close()
+    Tears down the connection. Must be safe to call more than once and when
+    not connected.
+
 Callback contract
-on_result(TranscriptResult(text, is_final, audio_range=None)) : interim
-results only update the UI; a final result becomes a saved TranscriptSegment . If a
-final has no audio_range , the manager estimates one (from the end of the previous
-final to the end of the audio sent so far) and marks it "approximate".
-on_error(exc) : reports an async failure. The manager marks the session
-disconnected and reconnects on the next batch.
+~~~~~~~~~~~~~~~~~
+  on_result(TranscriptResult(text, is_final, audio_range=None))
+      Interim results only update the UI; a final result becomes a saved
+      TranscriptSegment. If a final has no audio_range, the manager estimates
+      one (from the end of the previous final to the end of the audio sent so
+      far) and marks it "approximate".
+
+  on_error(exc)
+      Reports an async failure. The manager marks the session disconnected
+      and reconnects on the next batch.
+
 Callbacks must not block for long.
