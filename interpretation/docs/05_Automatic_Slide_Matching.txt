@@ -1,0 +1,198 @@
+PART 5 AUTOMATIC SLIDE MATCHING AND SHARED ALIGNMENT
+Revision 2: Python-only application with PySide6 UI
+Companion contract: 00_App_Overview_and_Part_C.txt
+Also supplies boundary decisions for document 02.
+
+RECOMMENDED APPROACH AND THE MEANING OF OPTION C
+
+Use semantic candidate retrieval, Gemini verification and temporal stability.
+The earlier A/B/C/D/E items are stages of this combined pipeline, not mutually
+exclusive designs. C means asking Gemini to verify which candidate material is
+being discussed. That is the recommended final semantic decision stage; retrieval
+keeps its context focused and stability checks prevent noisy changes.
+
+This is a practical design recommendation, not a measured universal optimum.
+For a tiny demo deck, directly give Gemini the compact outline of all slides plus
+recent speech first. Add embeddings when context size, ambiguity or latency
+justifies it. Keep the same output and persistence contract in both versions.
+
+WHAT CAN ACTUALLY BE INFERRED
+
+Without a feed of the projected screen, infer the slide/subsection relevant to
+speech. Do not claim exact projected-page observation. Repeated slides, adjacent
+examples and identical formulas may be indistinguishable from speech alone.
+Support multiple related pages, uncertainty and off-slide discussions.
+
+The app keeps two separate values:
+  viewed_page: where the student is browsing;
+  estimated_lecture_page: the current speech-based estimate, possibly unknown.
+
+Selecting/browsing an old slide must not change the inferred lecture position.
+Do not automatically navigate the viewer as part of the MVP. A future explicit
+"follow lecture" mode can consume the estimate independently.
+
+STAGE A PRECOMPUTE SUBSECTION SEARCH DATA
+
+Create a searchable representation of each prepared SlideSubsection:
+  title + summary + definitions + key terms/aliases + formula meaning/symbols +
+  diagram description. Preserve page and subsection IDs as metadata.
+
+Generate one embedding per reasonably sized subsection or smaller semantic unit.
+Keep grouping metadata to recover the complete subsection. Use one configured
+Gemini embedding model for both document and query vectors. Follow that model's
+current task-format instructions; task_type support differs across models.
+
+Persist vector, model/version, dimension, embedded-content hash and index_version.
+For a few hundred vectors, direct in-memory cosine comparisons are sufficient;
+Python sqlite3 repositories can persist vectors as JSON or dimension/dtype-tagged
+blobs. Python lists/math are adequate at this scale; NumPy is optional if already
+present. No separate vector database is required. Run embedding/model calls in
+bounded Qt workers and return results using queued signals, never GUI-thread calls.
+
+Cosine similarity:
+  score(q, d) = dot(q, d) / (norm(q) * norm(d))
+For vectors normalized by the model or your code, this reduces to dot(q, d).
+Do not compare vectors from incompatible embedding models or dimensions.
+
+STAGE B RETRIEVE FROM RECENT FINALIZED SPEECH
+
+Starting settings to evaluate, not benchmarked constants:
+  analysis interval: 10-20 seconds when meaningful new finalized speech exists;
+  retrieval window: approximately the latest 30-60 seconds;
+  semantic candidates: top 3-5 subsections, deduplicated by source/group.
+
+Search globally across the deck. Then union those candidates with the current
+accepted subsection and nearby pages (for example +/-2 pages). Cap the candidate
+set based on token budget. Global search permits skipping ahead and going back.
+Page proximity is a soft preference, not a rule forcing linear progress.
+
+Also allow exact title/key-term/formula-vocabulary hits to contribute candidates.
+This helps distinctive terminology that an embedding may underweight. This need
+not be a complex ranking system; a compact keyword index is sufficient initially.
+
+Use recent speech for matching, but maintain a processed-through cursor for all
+new transcript. Include every new span requiring assignment in ordered bounded
+batches. If backlogged, do not jump straight to the newest window and leave older
+speech with no section links.
+
+STAGE C GEMINI VERIFICATION AND TOPIC BOUNDARY ANALYSIS
+
+Give the generation model:
+  recent speech with stable segment IDs and source offsets;
+  new spans to assign and a short preceding overlap;
+  active LectureSection/pending transition state;
+  previous accepted slide/subsection match;
+  candidate subsection metadata and page IDs;
+  original candidate visuals where formulas/diagrams require them;
+  instruction to allow uncertain/off_slide and multiple matches.
+
+Ask it to decide which candidate(s) explain the actual spoken content, identify
+supporting spans, and detect continuation or transition of the lecture section.
+One analysis response supplies both slide alignment and section boundaries.
+Do not create a second independent model loop that can disagree about the topic.
+
+Suggested structured response fields:
+  input_revision, through_segment_id;
+  assignments[]: source span -> lecture section action and candidate IDs;
+  primary_slide_id: actual candidate page ID or null;
+  relevant_slide_ids[], relevant_subsection_ids[];
+  match_status: matched|uncertain|off_slide;
+  supporting_spans[];
+  transition: continue|candidate|confirm|uncertain;
+  proposed_boundary_span?, new_section_title?;
+  decision_strength: weak|moderate|strong;
+  short rationale.
+
+Only the app creates authoritative new section/database IDs. The model can
+request a new section using a local temporary label, which is mapped after
+validation. All referenced slides must come from the supplied candidate set.
+If evidence points outside it, return unresolved and run a wider retrieval pass.
+
+The analysis must not select a slide simply because one has to be selected.
+Examples and administrative remarks may have no matching page. Discussion of a
+formula can relate to both the definition and worked-example slides.
+
+STAGE D TEMPORAL STABILITY
+
+Store the raw candidate decision separately from the accepted display estimate.
+For an ambiguous proposed switch, require stronger support than the current
+match and confirmation across successive analysis updates. For a clear explicit
+transition with strong evidence, permit a faster switch so short topics are not
+always missed. Tune using fixture speech, not guessed universal thresholds.
+
+Keep a short history of recent decisions and supporting spans. This is a small
+state machine/hysteresis mechanism; a hidden Markov model is unnecessary for MVP.
+If recent evidence is weak or off-slide, mark the current estimate uncertain or
+unknown rather than claiming the previous page remains definitely current.
+
+Embedding scores and model strength labels are not calibrated probabilities.
+Do not display "95% certain" from an arbitrary similarity or model number.
+Thresholds must be calibrated to the actual model/fixture if probabilities are
+ever introduced.
+
+A fleeting reference to an earlier topic should normally create a relevant
+resource link without moving the current lecture estimate backward. A sustained
+return can create a new LectureSection occurrence with an earlier-topic link.
+
+STAGE E PERSIST SOURCE RELATIONSHIPS
+
+Persist source spans -> LectureSection and LectureSection -> SlideSubsection
+relationships plus alignment status/provenance. Store exact page links for
+specific formulas/visuals where identified. A section can span several pages.
+
+These links drive:
+  section notes after confirmed transitions;
+  selection-based resource resolution;
+  contextual chat evidence;
+  estimated lecture page;
+  final-note organization and source references.
+
+Keep decision revisions so a wrong match can be repaired. A corrected alignment
+invalidates affected context/notes appropriately without changing the original
+transcript. A student's selected page is context for their Explain request, not
+ground truth about where the professor is.
+
+SCHEDULING AND BACKPRESSURE
+
+Use one ordered committing alignment worker per lecture. Coalesce incoming
+events while a request runs; process the next batch afterward. Mic capture and
+transcription do not wait for alignment. Never issue one model call per word.
+Snapshot IDs and revisions before requests; reject/rebase stale results safely.
+Bound request sizes/concurrency and show analyzed-through status during delay.
+
+On API failure, retain last accepted links with an uncertainty/staleness marker,
+queue retry and leave transcript/Explain usable. On embedding failure, use a
+compact full-outline or keyword candidate fallback if within the model budget.
+Indexing/matching failure must not stop recording.
+
+PROMPT AND DATA SAFETY
+
+Treat transcript/slide text as evidence, not instructions. Validate outputs with
+Pydantic v2 plus membership, source-span and version checks. Do not log credentials.
+Keep PDF uploads/context references replaceable; local source content is the
+authority, not server-side conversation history.
+
+EVALUATION
+
+Prepare a five-to-ten-slide fixture with known intended discussion spans:
+  ordinary forward lecture progression;
+  multiple examples of one formula;
+  two adjacent slides sharing vocabulary;
+  a skipped slide;
+  a brief earlier-topic reference;
+  a sustained backward return;
+  an off-slide explanation;
+  ambiguous speech and a missing transcript interval.
+
+Inspect subsection/page match accuracy, false switches, switch delay, topic
+boundary correctness, processing latency and calls/tokens per lecture minute.
+Allow a set of acceptable pages for inherently ambiguous spans. Verify that
+relationships resolve the expected resources in the Explain feature.
+
+Prefer the simplest configuration that passes the demo fixtures. Expand ranking,
+temporal modeling or multimodal retrieval only when observed failures justify it.
+
+REFERENCE
+https://ai.google.dev/gemini-api/docs/embeddings
+https://ai.google.dev/gemini-api/docs/structured-output
+

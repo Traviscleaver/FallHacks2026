@@ -1,0 +1,271 @@
+LECTURE BUDDY APP OVERVIEW AND PART C IMPLEMENTATION HANDOFF
+Specification date: 7 November 2026
+Revision 2: Python-only application with PySide6 UI
+
+PURPOSE AND AUTHORITY
+
+Build a desktop application that helps a student follow an in-person lecture.
+The student imports lecture slides, records the professor through the laptop
+microphone, sees an incremental transcript and section notes, and can select
+material to open a focused explanation and chat screen. After the lecture, the
+app produces saved, organized notes and offers PDF export.
+
+This six-file handoff incorporates the user's revised workflow. Where the older
+team plan differs, use this handoff for Part C behavior. The core help workflow
+is selection -> Explain -> focused resource screen with chat. Do not replace it
+with a dedicated "I'm lost" button or a latest-speech-only explanation panel.
+
+These are implementation specifications, not a claim that code already exists.
+Inspect the actual repository and its instructions before editing. Reuse working
+infrastructure. Coordinate shared contracts with A and B instead of independently
+creating competing application controllers, storage layers, or app scaffolds.
+
+THE SIX DOCUMENTS
+
+00_App_Overview_and_Part_C.txt: app, ownership, shared records, integration order.
+01_Slide_Preparation.txt: visual PDF indexing and slide subsection metadata.
+02_Incremental_Transcript_and_Section_Notes.txt: topic boundaries and live notes.
+03_Selection_Explain_and_Context_Chat.txt: linked resources and focused chat.
+04_Final_Notes_and_PDF_Export.txt: final synthesis, validation and file rendering.
+05_Automatic_Slide_Matching.txt: retrieval, Gemini verification and stable matches.
+
+APP WORKFLOW
+
+1. Import a PDF. The viewer works while background slide preparation runs.
+2. Prepare a visual/text index of slides, formulas, images and subsections.
+3. Start recording. B captures audio and persists finalized transcript segments.
+4. C periodically aligns new finalized speech with slides and lecture sections.
+5. C produces short section notes after a topic transition is confirmed; long
+   open sections can have clearly labeled provisional notes.
+6. At any time, the student selects a slide, transcript passage or note and
+   chooses Explain. A opens a new screen/window displaying related slides,
+   related transcript recorded so far, related notes, and a chatbox.
+7. C resolves relationships, identifies unavailable resources and answers
+   questions using available evidence. Recording continues independently.
+8. On End Lecture, B flushes and saves remaining speech. C finishes section
+   processing and generates final notes. The app renders and exports the PDF.
+9. Reopening the lecture restores saved transcript, notes and conversations.
+
+TEAM OWNERSHIP
+
+Person A: PySide6 app shell, PDF viewer, text selection, Explain entry
+points, focused resource/chat screen, notes display and export UI, packaging.
+
+Person B: microphone and transcription service, transcript IDs and timing,
+lecture lifecycle, local audio, SQLite migrations and repository functions,
+Python service contracts and Qt event handoffs. B persists final speech before events.
+
+Person C (Johnny): Gemini adapter, visual slide preparation, context selection,
+automatic alignment, topic boundary decisions, section note generation, Explain
+resource resolution, grounded chat, final note synthesis, schemas and validation.
+C writes through B's repository functions. Export rendering is coordinated with A;
+file access and storage use the existing B-owned application services/repositories.
+
+SUGGESTED STACK AND BOUNDARIES
+
+Use Python throughout, with PySide6 Qt Widgets for the UI. Use google-genai
+(import: from google import genai) for Gemini and Pydantic v2 for schemas and
+response validation. Use Python's sqlite3 through B-owned repositories.
+Use QPdfDocument (PySide6.QtPdf) and QPdfView (PySide6.QtPdfWidgets) for local
+PDF viewing, text extraction and original-page rendering. Qt page indexes are
+0-based; stored PDF page numbers are 1-based. Convert at the viewer boundary.
+
+Use QTextBrowser/QTextDocument for selectable native rich-text notes and chat.
+QTextDocument supports Markdown but does not typeset arbitrary LaTeX. Preserve
+formula source text and render supported equations with Python Matplotlib
+MathText into image resources inserted by QTextCursor. MathText supports a TeX
+subset; unsupported formulas keep readable text/original-slide fallbacks.
+Use a shared Python document builder for on-screen and exported note content.
+Export through QTextDocument.print_(QPrinter) with QPrinter.PdfFormat. No browser
+runtime, JavaScript asset pipeline or web-based math renderer is required.
+
+Keep widgets on the Qt GUI thread. Run blocking Gemini calls and background jobs
+in bounded workers; return results using queued Signal/Slot connections. Use a
+QObject worker moved to QThread for a long-lived service, or QThreadPool/QRunnable
+for finite tasks. Calling a worker method directly does not move execution to its
+thread. Respect QObject thread affinity, including PDF objects. Pass immutable
+snapshots, not live widgets or database connections, between workers.
+
+Give SQLite one serialized storage worker owning its connection, or explicitly
+use per-thread connections and serialized writes. Do not pass a sqlite3 connection
+between threads or disable its thread checks as the concurrency design.
+For SDK async streaming, B may own an asyncio loop in a dedicated worker thread;
+do not run asyncio.run() on the GUI thread or start competing event loops per job.
+Reuse the team's existing Python audio/transcription pipeline and packaging.
+
+Use one configurable general Gemini generation model for indexing, alignment,
+notes and chat initially. Keep an embedding model configurable separately.
+Check actual project API access and installed SDK capabilities. Do not assume a
+model ID or thinking configuration copied from an old plan is accessible.
+No model has been benchmarked as the fastest or most accurate for this project.
+No Redis, external vector database, agent framework or separate HTTP server is
+needed for one local lecture. Use ordinary services, a bounded job queue and SQL.
+
+CORE ARCHITECTURE DECISION
+
+A prepared SlideSubsection describes material in the deck. A LectureSection
+describes a particular continuous discussion during the actual lecture. They
+are different records: professors skip, reorder, revisit and add material.
+
+Persist relationships while processing speech. Explain normally follows those
+relationships through repository queries instead of asking a model to rediscover
+everything on each click. Use semantic lookup only to establish or repair links.
+Slide matching and topic-boundary detection share one periodic analysis pass.
+
+The previous response's A/B/C/D/E slide-matching steps are complementary steps.
+If "C" means Gemini verification, use it as the final semantic decision stage,
+combined with candidate retrieval, temporal context and stability checks. It is
+not a competing complete algorithm by itself. For a tiny deck, supplying its
+entire compact outline is an acceptable bootstrap before embeddings.
+
+SHARED RECORDS AND INVARIANTS
+
+These are logical Python dataclass/Pydantic fields, not a demand for identical SQL tables.
+Store normalized relationships where useful. B owns actual migrations.
+
+Lecture:
+  id, title, pdf_asset_id, status, created_at, data_revision, transcript_complete
+
+Slide:
+  id, lecture_id, page_number, printed_slide_number?, title, extracted_text,
+  page_image_asset_id?, index_status, index_version
+  page_number is 1-based PDF order and is the canonical navigation target.
+
+SlideSubsection:
+  id, lecture_id, title, summary, key_terms[], formulas[], visuals[], index_version
+  Use a SlideSubsectionPage join for a subsection spanning pages. One slide can
+  participate in several subsections. Preserve original visuals and raw text.
+
+TranscriptSegment:
+  id, lecture_id, sequence, text, text_revision, audio_range?, timing_quality
+  This record represents finalized speech. Interim UI text is separate.
+  IDs are stable. sequence is canonical ordering. Timing can be approximate.
+  If text is corrected, increment text_revision and invalidate dependent jobs.
+
+LectureSection:
+  id, lecture_id, title, status(open|closing|closed), revision,
+  slide_subsection_ids[], related_earlier_section_ids[]
+  A return to an old concept creates a new occurrence and an optional link.
+  slide_subsection_ids can be empty for off-slide or currently unmatched speech.
+
+SectionSpan:
+  section_id, segment_id, segment_text_revision, start_offset, end_offset
+  Stored offsets are start-inclusive/end-exclusive Python str code-point indexes.
+  Qt text cursor positions use UTF-16 units: convert explicitly at the UI boundary
+  and map displayed rich-text positions to original source text. Test non-BMP
+  characters, newlines, inline formula images and formatted note selections.
+  This allows a topic boundary inside a transcript segment. Preserve original
+  segments; do not rewrite B's transcript just to split a topic.
+  MVP can assign a whole boundary segment to both sections when necessary.
+  Mark that overlap explicitly and avoid duplicate output notes.
+
+NoteBlock:
+  id, lecture_id, section_id, version, status(provisional|section_final|lecture_final),
+  markdown, source_spans[], slide_ids[], origin, user_edited, input_revision
+  origin distinguishes lecture-grounded content, slide-only background and
+  additional AI examples. User annotations/edits must not be silently replaced.
+
+Alignment:
+  id, lecture_id, source_spans[], slide_subsection_ids[], primary_slide_id?,
+  status(matched|uncertain|off_slide), decision_version, input_revision
+  Keep raw retrieval scores separate from accepted match decisions.
+
+ExplainSelection:
+  kind(slide|transcript|note), entity_id, text_revision?, start_offset?, end_offset?
+
+ExplainContext:
+  id, lecture_id, selection, lecture_section_ids[], slides[], transcript_spans[],
+  note_blocks[], available_through_segment_id?, data_revision, missing_resources[],
+  processing_status, candidate_resources[]
+  Distinguish confirmed linked resources from uncertain suggestions.
+
+ChatSession and ChatMessage:
+  session id, lecture_id, selection, created_at;
+  message id, session_id, role, content, source_refs[], context_revision/cutoff,
+  generation_status and created_at. Save actual evidence IDs used per answer.
+
+FinalNotes:
+  id, lecture_id, version, status, content_sections[], source_refs[], input_revision,
+  coverage_warnings[], generated_at, export_asset_id?
+
+REFERENCE VALIDATION
+
+All evidence IDs must exist, belong to the same lecture and be allowed by the
+request snapshot/cutoff. Validate offsets against the referenced text revision.
+Validate slide IDs against the imported PDF and subsection index version.
+Unknown or unsupported content must not receive invented source references.
+Schema-valid JSON can still contain incorrect semantics: validate both.
+
+RECOMMENDED SERVICE INTERFACES
+
+prepare_slides(lecture_id) -> slide index status/result
+process_finalized_speech(lecture_id, through_segment_id) -> alignment/section changes
+generate_section_notes(section_id, expected_revision) -> NoteBlock[]
+resolve_explain_context(lecture_id, selection) -> ExplainContext
+ask_in_context(chat_session_id, question, context_revision) -> streamed/saved answer
+finalize_lecture_notes(lecture_id, expected_input_revision) -> FinalNotes
+export_notes_pdf(final_notes_id, version) -> saved export reference
+
+Use typed Python service calls and queued Qt signals through the shared controller.
+Requests/events carry
+lecture_id; chat/help requests also carry session_id/request_id; jobs carry job_id.
+Qt application signals can include slides_ready, section_updated, notes_updated,
+explain_context_ready, chat_delta, chat_complete, final_notes_ready and processing_error.
+Exact names are integration decisions; do not introduce duplicate equivalents.
+
+JOB AND SNAPSHOT RULES
+
+Mic capture never awaits AI. Persist speech first, then enqueue processing.
+At most one alignment job per lecture commits at a time. Coalesce newer speech
+into the next job instead of starting overlapping jobs on every incoming word.
+Snapshot source IDs, text revisions, index version and cutoff for every request.
+Use an input key to deduplicate retries. Before committing an AI result, confirm
+its input revisions remain valid. A stale result must not overwrite newer state.
+Keep uncovered backlog visible and process it in order; never skip it just because
+the model uses a recent speech window for its matching decision.
+Use bounded concurrency and prioritize chat over nonurgent background drafts.
+Retry transient API failures with bounded backoff. Invalid outputs get a limited
+repair/retry path, then an explicit recoverable job failure. Persist usable work.
+
+IMPLEMENTATION ORDER
+
+1. Agree schemas and repository contracts with A/B; create a small lecture fixture.
+2. Prepare its slides and persist stable slide/subsection IDs.
+3. Use fixture section links to implement selection resolution and focused chat.
+4. Generate final notes and verify Markdown/math plus PDF export.
+5. Add periodic live alignment and section-boundary analysis; wire live notes.
+6. Add embedding retrieval and tune match stability against the same fixtures.
+7. Test with real microphone speech, restart, delayed processing and API failure.
+
+WHAT CODEX SHOULD DO FIRST
+
+Read all six files, inspect repository instructions and current implementation,
+then map these services to existing modules. Implement Part C within its ownership
+boundary. Use mock repository adapters/fixtures when teammate work is unavailable.
+Do not rebuild the audio capture or UI app unnecessarily. Coordinate shared schema
+changes. Report implemented behavior, validation results and actual limitations.
+
+SUCCESS CRITERIA
+
+Selecting any supported resource opens the agreed focused screen. Related
+transcript expands to its full discussion recorded so far, including open
+sections. Missing resources show informative statuses instead of breaking the
+screen. Chat cites valid evidence. Section notes appear after confirmed topic
+transitions. Lecture finalization includes remaining speech, preserves formulas,
+labels additional examples and produces a readable reopenable/exportable result.
+
+OFFICIAL REFERENCES
+
+https://ai.google.dev/gemini-api/docs/document-processing
+https://ai.google.dev/gemini-api/docs/structured-output
+https://ai.google.dev/gemini-api/docs/embeddings
+https://ai.google.dev/gemini-api/docs/models
+https://googleapis.github.io/python-genai/
+https://docs.pydantic.dev/latest/
+https://doc.qt.io/qtforpython-6/PySide6/QtPdf/index.html
+https://doc.qt.io/qtforpython-6/PySide6/QtPdfWidgets/QPdfView.html
+https://doc.qt.io/qtforpython-6/PySide6/QtCore/QThread.html
+https://doc.qt.io/qtforpython-6/PySide6/QtGui/QTextDocument.html
+https://doc.qt.io/qtforpython-6/PySide6/QtPrintSupport/QPrinter.html
+https://matplotlib.org/stable/api/mathtext_api.html
+
