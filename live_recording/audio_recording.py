@@ -92,6 +92,19 @@ class _StreamingResampler:
 
 
 class AudioSource(Protocol):
+    """Interface ``LiveRecordingManager`` uses to pull microphone audio.
+
+    ``read`` returns PCM16 LE mono at ``SAMPLE_RATE`` (``b""`` on timeout).
+    """
+
+    def open(self, device_id: Optional[str]) -> None: ...
+
+    def read(self, timeout: float) -> bytes: ...
+
+    def close(self) -> None: ...
+
+
+class SoundDeviceAudioSource:
     """``AudioSource`` backed by the ``sounddevice`` (PortAudio) library.
 
     It asks PortAudio for 16 kHz mono directly. If the device refuses, it
