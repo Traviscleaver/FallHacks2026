@@ -1,0 +1,196 @@
+PART 4 FINAL NOTES AND PDF EXPORT
+Revision 2: Python-only application with PySide6 UI
+Companion contract: 00_App_Overview_and_Part_C.txt
+
+GOAL
+
+After the lecture, combine the complete available transcript, prepared slide
+material, generated section notes and user instructions into organized study
+notes. Preserve meaningful examples, formulas and qualifications. Include useful
+additional teaching examples with clear labels. Save content independently of
+the PDF so it can be reopened, searched, selected for Explain and re-exported.
+
+KEY IMPLEMENTATION DECISION
+
+Gemini generates structured content, not the final PDF binary. The app validates
+that content, builds a native Qt rich-text document and exports it with Qt's
+Python print support. This makes formatting deterministic and keeps
+the output selectable/linkable inside the application.
+
+TRIGGER AND INPUT READINESS
+
+End Lecture is coordinated by B:
+  stop capture -> flush pending audio -> finish/timeout transcription -> persist
+  final speech -> publish finalization readiness and remaining gap status.
+
+C then processes remaining section assignments, closes the active section and
+builds an immutable finalization snapshot. Do not generate from whatever transcript
+happens to exist at the moment Stop is clicked.
+
+If speech is incomplete, let the user receive clearly labeled partial notes with
+coverage warnings and a retry/regenerate path. Do not silently wait forever or
+claim notes cover unavailable speech. Later recovered transcript creates a new
+input revision and a new final-note version.
+
+INPUTS AND EVIDENCE PRIORITY
+
+Use:
+  complete available original finalized transcript with IDs/revisions;
+  relevant original slides plus prepared metadata;
+  section drafts/final section notes with sources;
+  user instructions and user annotations if present;
+  coverage gaps, transcript completeness and timing quality.
+
+Transcript establishes spoken lecture evidence. Slides establish slide content.
+Existing generated notes are organizational aids, not primary truth. User
+annotations should be preserved and identified, not silently rewritten as
+professor statements. General model knowledge is supplemental teaching content.
+
+ONE REQUEST OR SECTION SYNTHESIS
+
+For a short lecture/deck that fits comfortably in input and output budgets, make
+one final generation call with the original material and drafts.
+
+For a longer lecture:
+1. Generate detailed source-referenced notes per LectureSection from original
+   speech and slides. Split unusually large sections by source spans if needed.
+2. Synthesize the section outputs into an outline, consistent terminology and
+   cross-references. Keep each note block's evidence references.
+3. Verify each final section against its original speech/slides. Repair missing
+   definitions, examples, conditions or source links locally where necessary.
+4. Combine the validated structured sections into the saved final document.
+
+Avoid repeatedly compressing summaries of summaries. Measure token budgets and
+leave room for output. If generation is truncated, mark it incomplete and retry
+by section; a syntactically valid-looking prefix is not a completed document.
+
+GENERATION INSTRUCTIONS
+
+Ask for:
+  lecture title and concise scope;
+  coherent topic/section organization;
+  definitions and main explanations;
+  readable formulas with symbol meanings and stated conditions;
+  worked examples actually present in the lecture;
+  selected additional teaching examples where they improve understanding;
+  qualifications, exceptions and relevant professor emphasis;
+  source references for each meaningful block;
+  explicit coverage/missing-context notes when relevant.
+
+Do not require an invented example for every paragraph. Avoid introducing a
+different method or assumption without explaining it. Preserve units, notation
+and important distinctions. Do not say "the professor said" based only on slides.
+
+Use explicit block origins:
+  lecture: supported by transcript;
+  slide_background: supported by slides without confirmed spoken coverage;
+  additional_ai_example: newly generated teaching example;
+  user_annotation: preserved student content.
+
+SCHEMA
+
+A FinalNotes object contains:
+  lecture_id, version, title, status, input_revision, generated_at;
+  coverage_warnings[];
+  sections[] with id/title and blocks[];
+  blocks with stable ID, type, markdown, origin, source_spans[], slide_ids[];
+  optional example details and diagram asset references;
+  export status/asset reference separately from content generation status.
+
+Use a shallow schema with block types such as explanation, formula, example,
+qualification and summary. Preserve lecture_section_ids for resource resolution.
+Use valid original page assets for diagrams. Do not ask the model to invent a
+replacement diagram when the original slide is the evidence.
+
+VALIDATION
+
+Apply Pydantic v2 and application checks:
+  all referenced IDs/revisions exist in this lecture snapshot;
+  transcript spans are valid and within the final cutoff;
+  block origins agree with the kind of evidence they claim;
+  no duplicate blocks from overlapping transcript spans;
+  formulas render or retain a readable fallback;
+  no unclosed/truncated output marked complete;
+  note content stays within reasonable field sizes;
+  all sections required by the generation plan are present.
+
+Reference validity alone does not prove a claim follows from its source. Use a
+targeted verification pass against originals for substantive content, with manual
+fixture review of formulas/examples. Do not require a separate costly model pass
+for trivial formatting changes that leave content unchanged.
+
+RENDERING AND PDF EXPORT
+
+Persist validated structured content first. Use a shared Python builder to
+construct QTextDocument rich text for the PySide6 note view and PDF export.
+QTextDocument.setMarkdown() handles Markdown, but is not a LaTeX typesetter. For
+supported formulas, use matplotlib.mathtext.math_to_image() to generate cached
+high-resolution images and insert them as document resources with QTextCursor.
+Retain the original LaTeX/plain-text formula and its evidence IDs. MathText
+supports a subset of TeX; on unsupported syntax, show the readable source and/or
+original slide formula instead of dropping it or pretending rendering succeeded.
+Serialize MathText rendering in its worker if used concurrently; do not share
+mutable Matplotlib rendering state across arbitrary threads.
+
+Build from typed note blocks with a controlled Markdown subset. Disable raw model
+HTML and automatic arbitrary resource loads. Whitelist local image resources and
+route citation anchors through application handlers. Maintain source-block mapping
+for selection -> Explain; rendered character offsets are not source offsets.
+Cite PDF page numbers and optionally transcript time ranges, indicating approximate
+timing where appropriate. Image equations are not selectable text; preserve their
+source and provide a block-level Explain/copy-source action.
+
+For one saved FinalNotes version, configure QPrinter with PdfFormat, output path,
+page size and margins, then use QTextDocument.print_(printer). Check the actual
+installed PySide6 method names/signatures. Load all fonts/images/formula resources
+before printing. This is a native Python/Qt pipeline; no web view or JavaScript
+renderer is required. Reuse A's document styling and B's file/storage services.
+
+Export a fresh document clone, not a live GUI document being edited. Respect Qt
+object thread affinity; if export runs in a worker, construct/use its document and
+printer there with validated immutable input and application font support. Return
+completion/failure through signals. Never block the recording path on export.
+
+Use QTextDocument block/character formats, page-break policies, image scaling and
+printer margins for readable output. If page numbering/custom footers are needed,
+use a controlled QPainter/QPrinter pagination pass with space reserved for them;
+do not assume print CSS applies or QTextDocument adds page numbers automatically.
+Check long equations, heading breaks and image dimensions for clipping.
+
+PDF links may be ordinary printed page references when app-internal navigation
+cannot operate outside the application. Do not promise a PDF link will open the app
+unless a tested deep-link mechanism exists. The in-app notes still support
+selection -> Explain and direct local source navigation.
+
+Markdown export can be an additional option, not a replacement for saved structured
+notes and requested PDF support. Export failure must not lose generated content.
+
+VERSIONS, EDITS AND RECOVERY
+
+Key generation jobs by lecture_id + final transcript/index revisions + prompt and
+schema versions. Keep old saved versions when regenerating. Preserve user edits
+separately or present a merge/review path instead of replacing them silently.
+Record model/config metadata for reproducibility, without credentials.
+API failure retains transcript, slides and section drafts. Retry only the failed
+generation/export step where possible. Reopening the app restores saved notes.
+
+ACCEPTANCE SCENARIOS
+
+Use a fixture script containing a definition, formula, worked example, important
+qualification and spoken detail absent from slides. Confirm final notes retain
+all five and distinguish an added teaching example. Verify source references.
+
+Also test final trailing speech, incomplete audio coverage, generation failure,
+an export failure followed by retry, reopening saved content, and selection of a
+final-note paragraph into the focused Explain workflow.
+
+Visually inspect the exported PDF, especially math, long lines, page boundaries
+and images. Text-only validation cannot detect clipping or awkward layout.
+
+REFERENCES
+https://ai.google.dev/gemini-api/docs/structured-output
+https://doc.qt.io/qtforpython-6/PySide6/QtGui/QTextDocument.html
+https://doc.qt.io/qtforpython-6/PySide6/QtPrintSupport/QPrinter.html
+https://doc.qt.io/qtforpython-6/PySide6/QtPrintSupport/index.html
+https://matplotlib.org/stable/api/mathtext_api.html
+
