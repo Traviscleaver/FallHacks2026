@@ -1,2 +1,4 @@
 .venv
 .env
+# output of test_live_recording.py
+test_recording.wav
