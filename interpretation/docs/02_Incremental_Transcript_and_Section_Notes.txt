@@ -1,0 +1,181 @@
+PART 2 INCREMENTAL TRANSCRIPT AND SECTION NOTES
+Revision 2: Python-only application with PySide6 UI
+Companion contract: 00_App_Overview_and_Part_C.txt
+Related algorithm: 05_Automatic_Slide_Matching.txt
+
+GOAL
+
+Accept finalized timestamped transcript segments incrementally, identify coherent
+lecture discussions, and generate short notes after each subsection appears to
+end. A definition, formula explanation and its examples normally form one section.
+Notes must also work when the professor deviates from the slide outline.
+
+INPUT CONTRACT
+
+B persists each finalized TranscriptSegment before notifying C. Segments have
+stable IDs, sequence, text_revision, text and audio timing information when known.
+Use sequence for reliable ordering. Timing quality may be approximate; never
+present response-arrival timestamps as exact spoken-word times.
+
+Interim transcription is replaceable UI text. Do not use it as committed evidence
+for persistent section notes. If final text is corrected later, increment its
+revision and invalidate affected span links, snapshots and generated drafts.
+
+A transcription chunk is a transport/transcription unit, not a semantic topic.
+One section may contain many chunks; one chunk may contain a topic boundary.
+
+SECTION STATE MACHINE
+
+OPEN:
+  Append related finalized spans to the active LectureSection. Expose it to
+  Explain immediately, even before a summary exists.
+
+CLOSING:
+  Speech suggests a topic transition. Record a proposed end span/offset and
+  candidate next section. Keep it provisional while receiving more speech.
+
+CLOSED:
+  New speech sufficiently confirms the transition. Commit the boundary, assign
+  spans to the next section and enqueue a summary of the completed section.
+
+Store a section revision and boundary decision provenance. Closed sections can
+be extended/revised when later evidence shows the boundary was premature.
+A genuine later revisit creates a separate section occurrence with a related-
+earlier-section link rather than one huge noncontiguous transcript section.
+
+BOUNDARY EXAMPLE
+
+Segments 20-28 explain a cosine-similarity formula and apply it to two vectors.
+Segment 29 says "Now let's look at Euclidean distance."
+Segments 30-32 explain coordinate differences and distance.
+
+After processing 30-32, close the first section before the transition to the new
+topic. The decision is made later than the actual boundary. Return the boundary
+as a source span/offset; do not cut at the current processing time.
+
+A new example of the same formula is not automatically a boundary. A page turn
+is supporting evidence, not proof. Silence alone is not a semantic transition.
+No algorithm can know an ending with certainty before enough later speech exists.
+
+PERIODIC ANALYSIS
+
+Use the shared alignment pass from document 05. Schedule with the shared Python
+job service; a Qt QTimer may trigger enqueue checks but must not perform blocking
+model calls. Use worker threads and queued results; widgets remain on the GUI
+thread. Do not keep SQLite connections in arbitrary generation workers. Starting settings to evaluate:
+  Run every 10-20 seconds if there is meaningful new finalized speech.
+  Use roughly 30-60 seconds of recent speech for candidate retrieval.
+  Supply a short preceding overlap and compact active-section context to Gemini.
+  Track a processed-through cursor so no unprocessed segments are dropped.
+
+The input includes:
+  all newly unprocessed finalized segments in this bounded batch;
+  overlap from already processed speech for continuity;
+  active/pending section state;
+  candidate slide subsections and relevant original visuals if needed;
+  previous accepted alignment; input revisions and cutoff.
+
+If backlog exceeds the bounded batch budget, process it in ordered batches. A
+recent matching window is not permission to skip older unprocessed transcript.
+Allow partially processed status and show the analyzed-through cutoff.
+
+ANALYSIS OUTPUT
+
+Request a Pydantic-backed structured schema containing:
+  input cutoff/reference;
+  section assignments for supplied new spans;
+  accepted or proposed boundary span/offset;
+  transition status continue|candidate|confirm|uncertain;
+  matched slide subsection/page IDs or off_slide/uncertain status;
+  supporting source spans and brief decision rationale.
+
+Validate the model's IDs and offsets. It cannot invent transcript IDs, refer to
+future speech, or move already stable boundaries without an explicit revision.
+Store temporal assignments, not just a single "current topic" string.
+
+TRANSCRIPT SPAN HANDLING
+
+Preserve original B-owned transcript segments. Use SectionSpan memberships with
+start-inclusive/end-exclusive Python str code-point offsets for within-segment
+splits. Convert Qt UTF-16 cursor positions in the UI adapter, including a mapping
+from rendered note/transcript positions to original source text.
+If precise offsets prove unreliable for the MVP, assign a boundary segment to
+both adjacent sections, label the overlap, and deduplicate summaries by source.
+All ordinary speech should have a section, even if named "Unmatched discussion."
+Do not force a slide match just to avoid an empty relationship.
+
+SECTION NOTE GENERATION
+
+When a boundary is confirmed, read the section's complete original finalized
+speech plus linked slide material and generate concise structured note blocks.
+
+Suggested content:
+  topic heading;
+  main definition/concept;
+  formula and what its symbols mean, where discussed;
+  key explanation steps;
+  worked example actually given in the lecture;
+  important conditions, exceptions or qualifications;
+  valid source spans and slide references.
+
+Keep these notes short enough to scan during a lecture. Preserve meaning rather
+than mechanically collecting a bullet per sentence. Do not invent an example for
+every live section. Additional teaching examples, when requested/generated, need
+their own origin label distinct from lecture evidence.
+
+PROMPT REQUIREMENTS
+
+Explain only what the provided speech/slides support. Separate slide-only
+background from material confirmed in speech. Preserve math, units, assumptions
+and professor qualifications. An unavailable transcript span is not evidence
+that the professor never covered something. Mark actual gaps/uncertainty.
+Return typed note blocks with evidence references; do not return a PDF.
+
+LONG OR UNCLEAR SECTIONS
+
+Create a provisional checkpoint after a configurable period of sustained speech,
+for example 60-120 seconds, if no boundary is confirmed. Treat that interval as a
+starting setting to tune, not a guaranteed optimal threshold.
+The UI labels it provisional. A final section summary can replace the generated
+draft after closure. Preserve previous versions and do not overwrite user edits.
+
+Where a long section exceeds generation budgets, create detailed span-based
+drafts and synthesize them with the original section speech available for checking.
+Avoid recursively summarizing summaries until details disappear.
+
+REVISIONS AND IDEMPOTENCY
+
+Use a generation key based on section_id, section revision, source text revisions,
+slide index version and prompt/schema version. Retried jobs update the intended
+version rather than creating duplicate visible notes.
+Commit only if the source snapshot remains current. If the section grows during
+generation, preserve the usable result as provisional/stale and schedule a current
+version. Never let an old completion replace newer accepted notes.
+
+END LECTURE
+
+Wait for B's transcript-flushed/finalization-ready signal, with explicit completion
+and gap status. Then process remaining unassigned speech, close the active section
+because the session ended, and generate its notes. Do not invent a natural topic
+transition at end-of-recording. Final synthesis is described in document 04.
+
+FAILURE AND UI BEHAVIOR
+
+Capture continues while matching/notes are delayed. Persist job status and cursor.
+Show "Notes being prepared" or "Analysis available through ..." as appropriate.
+Retry failed jobs; retain raw transcript and previous notes. For missing audio,
+carry B's gap metadata into notes instead of reconstructing speech from slides.
+No continuous rapid polling/model call per word is necessary.
+
+ACCEPTANCE SCENARIOS
+
+1. Formula followed by two examples remains one section until the actual shift.
+2. An explicit new topic closes the old section at the correct earlier boundary.
+3. A passing mention of an old topic does not fragment the active section.
+4. A section without slides still receives transcript links and notes.
+5. Explain can load an open section before any note block exists.
+6. Ending the lecture includes the last finalized segment.
+7. Duplicate events/retries do not duplicate notes or source memberships.
+8. A delayed old job cannot overwrite a newer section revision.
+9. A boundary inside a chunk does not require modifying the source transcript.
+
