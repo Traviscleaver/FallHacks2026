@@ -3,3 +3,6 @@
 # output of test_live_recording.py
 test_recording.wav
 .venv/
+__pycache__/
+*.py[cod]
+test_outputs/
