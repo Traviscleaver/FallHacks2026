@@ -109,7 +109,7 @@ class DrillDownView(QWidget):
         ch_layout = QHBoxLayout(chat_header)
         ch_layout.setContentsMargins(0, 0, 0, 0)
 
-        lbl_chat = QLabel("Ask Lecture Buddy")
+        lbl_chat = QLabel("Ask Borp")
         lbl_chat.setObjectName("PanelTitle")
         ch_layout.addWidget(lbl_chat)
         ch_layout.addStretch()
@@ -272,17 +272,17 @@ class DrillDownView(QWidget):
                 )
             elif status == "pending":
                 blocks.append(
-                    f"<p style='margin:6px 0;'><b style='color:{c['muted']};'>Lecture Buddy:</b> "
+                    f"<p style='margin:6px 0;'><b style='color:{c['muted']};'>Borp:</b> "
                     f"<i style='color:{c['muted']};'>Thinking…</i></p>"
                 )
             elif status == "error":
                 blocks.append(
-                    f"<p style='margin:6px 0;'><b style='color:{c['muted']};'>Lecture Buddy:</b> "
+                    f"<p style='margin:6px 0;'><b style='color:{c['muted']};'>Borp:</b> "
                     f"<span style='color:{c['error']};'>Couldn't get an answer: {html.escape(msg)}</span></p>"
                 )
             else:
                 blocks.append(
-                    f"<div style='margin:6px 0;'><b style='color:{c['muted']};'>Lecture Buddy:</b> "
+                    f"<div style='margin:6px 0;'><b style='color:{c['muted']};'>Borp:</b> "
                     f"<span style='color:{c['primary']};'>{markdown_lite_to_html(msg)}</span></div>"
                 )
         self.chat_feed.setHtml("".join(blocks))
