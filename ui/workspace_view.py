@@ -11,6 +11,7 @@ from components import CleanSectionRow, SlideScrollFeed
 from gemini_stub import GeminiServiceStub
 import fitz
 from PIL import Image
+import html
 import io
 
 
@@ -153,9 +154,9 @@ class WorkspaceView(QWidget):
         th_layout.addWidget(trans_title)
         th_layout.addStretch()
 
-        trans_status = QLabel("LIVE STREAM")
-        trans_status.setObjectName("WorkspaceBadge")
-        th_layout.addWidget(trans_status)
+        self.trans_status = QLabel("IDLE")
+        self.trans_status.setObjectName("WorkspaceBadge")
+        th_layout.addWidget(self.trans_status)
         trans_layout.addWidget(trans_header)
 
         div3 = QFrame()
@@ -166,13 +167,15 @@ class WorkspaceView(QWidget):
         self.transcript_box = QTextEdit()
         self.transcript_box.setReadOnly(True)
         self.transcript_box.setObjectName("TranscriptViewer")
-        self.transcript_lines = [
-            ("[08:12]", "Welcome to today's lecture. Reviewing uploaded PDF slide deck."),
-            ("[08:29]", "Continuous document scroll feed rendering razor-sharp slide images."),
-            ("[08:44]", "Click any slide or section to open the contextual deep-dive."),
-        ]
+        self.transcript_lines: list[tuple[str, str]] = []
+        self.interim_text = ""
         self.render_transcript()
         trans_layout.addWidget(self.transcript_box, stretch=1)
+
+        self.gemini.transcript_interim.connect(self.on_transcript_interim)
+        self.gemini.transcript_final.connect(self.on_transcript_final)
+        self.gemini.recording_status.connect(self.on_recording_status)
+        self.gemini.recording_error.connect(self.on_recording_error)
 
         right_col.addWidget(sections_card, stretch=6)
         right_col.addWidget(trans_card, stretch=4)
@@ -182,11 +185,56 @@ class WorkspaceView(QWidget):
 
     def render_transcript(self):
         color = "#2563EB" if self.is_light_mode else "#60A5FA"
+        muted = "#71717A" if self.is_light_mode else "#A1A1AA"
         html_blocks = [
-            f"<div style='color:{color}; margin-bottom:5px; line-height:1.25;'>{ts}: {txt}</div>"
+            f"<div style='color:{color}; margin-bottom:5px; line-height:1.25;'>"
+            f"{ts}: {html.escape(txt)}</div>"
             for ts, txt in self.transcript_lines
         ]
+        if self.interim_text:
+            html_blocks.append(
+                f"<div style='color:{muted}; font-style:italic; line-height:1.25;'>"
+                f"{html.escape(self.interim_text)}</div>"
+            )
+        if not html_blocks:
+            html_blocks.append(
+                f"<div style='color:{muted};'>Press Start Recording to begin the live transcript.</div>"
+            )
         self.transcript_box.setHtml("".join(html_blocks))
+        bar = self.transcript_box.verticalScrollBar()
+        bar.setValue(bar.maximum())
+
+    # ----------------------------------------------------- live transcript
+
+    def on_transcript_interim(self, text: str):
+        self.interim_text = " ".join(text.split())
+        self.render_transcript()
+
+    def on_transcript_final(self, text: str, start_seconds: float):
+        m, s = divmod(int(start_seconds), 60)
+        self.transcript_lines.append((f"[{m:02d}:{s:02d}]", text))
+        self.interim_text = ""
+        self.render_transcript()
+
+    def on_recording_status(self, status: str):
+        labels = {
+            "connecting": "CONNECTING",
+            "recording": "LIVE STREAM",
+            "reconnecting": "RECONNECTING",
+            "stopping": "FINISHING",
+            "stopped": "IDLE",
+            "error": "ERROR",
+        }
+        self.trans_status.setText(labels.get(status, status.upper()))
+        if status == "stopped" and self.interim_text:
+            # Nothing more will finalize it, so drop the stale interim line.
+            self.interim_text = ""
+            self.render_transcript()
+
+    def on_recording_error(self, message: str):
+        self.trans_status.setToolTip(message)
+        self.transcript_lines.append(("[!]", message))
+        self.render_transcript()
 
     def set_theme_mode(self, is_light: bool):
         self.is_light_mode = is_light
