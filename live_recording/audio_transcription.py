@@ -110,7 +110,11 @@ class GeminiTranscriber:
         self._types = types
         self._client = genai.Client(api_key=key)
         self._model = model
-        transcription = {"language_codes": list(language_codes)}
+        # Even an empty language_codes list is rejected by the installed SDK's
+        # Gemini Live serializer. Omit optional hints unless explicitly supplied.
+        transcription = {}
+        if language_codes:
+            transcription["language_codes"] = list(language_codes)
         if custom_vocabulary:
             transcription["custom_vocabulary"] = list(custom_vocabulary)
         if mode:
@@ -164,8 +168,8 @@ class GeminiTranscriber:
             return
         try:
             self._call(self._finish(timeout), timeout + 1.0)
-        except concurrent.futures.TimeoutError:
-            pass  # partial transcript is kept; the manager closes us next
+        except concurrent.futures.TimeoutError as exc:
+            raise TimeoutError("Final transcription did not finish before the timeout") from exc
 
     def close(self) -> None:
         loop, thread = self._loop, self._thread
@@ -239,14 +243,23 @@ class GeminiTranscriber:
 
     async def _finish(self, timeout: float) -> None:
         if self._rotation is not None:
-            await asyncio.wait({self._rotation}, timeout=timeout)
+            _, pending = await asyncio.wait({self._rotation}, timeout=timeout)
+            if pending:
+                raise TimeoutError("Transcription session rotation did not finish")
         sess = self._current
         waits = set(self._retiring)
         if sess is not None and sess.audio_since_final and self._failure is None:
             await self._end_stream(sess)
             waits.add(asyncio.ensure_future(sess.drained.wait()))
         if waits:
-            await asyncio.wait(waits, timeout=timeout)
+            _, pending = await asyncio.wait(waits, timeout=timeout)
+            if pending:
+                for task in pending - self._retiring:
+                    task.cancel()
+                await asyncio.gather(*(pending - self._retiring), return_exceptions=True)
+                raise TimeoutError("Final transcription did not finish before the timeout")
+        if self._failure is not None:
+            raise ConnectionError("Transcription ended after a connection failure")
 
     async def _close_all(self) -> None:
         tasks = [t for t in (self._rotation, *self._retiring) if t is not None]

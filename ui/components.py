@@ -7,7 +7,7 @@ from PySide6.QtWidgets import QWidget, QHBoxLayout, QVBoxLayout, QLabel, QFrame,
 
 
 class CleanSectionRow(QFrame):
-    """Standardized flat row inside the Live Sections panel."""
+    """Standardized flat row inside the Lecture Sections panel."""
     clicked = Signal(str, str, str)
 
     def __init__(self, title: str, meta: str, body: str):
@@ -26,6 +26,7 @@ class CleanSectionRow(QFrame):
         top = QHBoxLayout()
         top.setContentsMargins(0, 0, 0, 0)
         t_lbl = QLabel(title)
+        t_lbl.setTextFormat(Qt.PlainText)
         t_lbl.setObjectName("RowTitle")
         top.addWidget(t_lbl)
         top.addStretch()
@@ -36,6 +37,7 @@ class CleanSectionRow(QFrame):
         layout.addLayout(top)
 
         b_lbl = QLabel(body)
+        b_lbl.setTextFormat(Qt.PlainText)
         b_lbl.setObjectName("RowBody")
         b_lbl.setWordWrap(True)
         layout.addWidget(b_lbl)
@@ -92,6 +94,16 @@ class SlideScrollFeed(QFrame):
 
     def _render_scaled_slides(self):
         if not self._raw_pixmaps:
+            while self.feed_layout.count():
+                item = self.feed_layout.takeAt(0)
+                if item.widget():
+                    item.widget().deleteLater()
+            placeholder = QLabel("Click anywhere or drop a PDF to load lecture slides")
+            placeholder.setObjectName("MutedText")
+            placeholder.setAlignment(Qt.AlignCenter)
+            self.feed_layout.addStretch()
+            self.feed_layout.addWidget(placeholder)
+            self.feed_layout.addStretch()
             return
 
         while self.feed_layout.count():

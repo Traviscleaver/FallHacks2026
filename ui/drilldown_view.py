@@ -7,7 +7,6 @@ from PySide6.QtWidgets import (
     QWidget, QHBoxLayout, QVBoxLayout, QFrame, QLabel,
     QPushButton, QTextEdit, QLineEdit
 )
-from gemini_stub import GeminiServiceStub  # noqa: F401 - also puts repo root on sys.path
 from slide_deep_dive import DeepDiveContext, DeepDiveService
 from slide_deep_dive.render import breakdown_to_html, markdown_lite_to_html
 
@@ -182,6 +181,13 @@ class DrillDownView(QWidget):
             ctx.transcript_provider = transcript_provider
         self.load_context(ctx)
 
+    def update_context(self, ctx: DeepDiveContext):
+        """Refresh source material without restarting the conversation or making API calls."""
+        self.context = ctx
+        self.lbl_title.setText(ctx.title)
+        self.meta_badge.setText(ctx.badge.upper())
+        self._render_content()
+
     def request_breakdown(self):
         if not self.context.title:
             return
@@ -239,7 +245,7 @@ class DrillDownView(QWidget):
                     Lecture Context
                 </p>
                 <p style='color:{c['primary']}; margin-top:0px; margin-bottom:16px;'>
-                    {html.escape(self.context.description)}
+                    {markdown_lite_to_html(self.context.description)}
                 </p>
                 <hr style='border:none; border-top:1px solid {c['divider']}; margin:16px 0;'>
                 <p style='color:{c['muted']}; font-size:11px; font-weight:600; text-transform:uppercase; letter-spacing:0.5px; margin-bottom:6px;'>
