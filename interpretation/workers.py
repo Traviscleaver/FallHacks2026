@@ -10,6 +10,7 @@ from .models import Segment
 from .pdf_input import extract_pdf
 from .slide_preparation import stable_id
 from .gemini_adapter import safe_error_message
+from .final_notes import FinalNotesService
 
 
 class InterpretationController(QObject):
@@ -23,6 +24,7 @@ class InterpretationController(QObject):
     pdf_loaded = Signal(str, object)
     state_updated = Signal(str, object)
     shutdown_complete = Signal()
+    final_notes_ready = Signal(str, object, str)
     _completed = Signal(bool)
 
     def __init__(self, slide_service, notes_service, recording_manager=None, parent=None):
@@ -75,6 +77,10 @@ class InterpretationController(QObject):
         self._events.put(("finish", lecture_id, transcript_complete))
         self._tick()
 
+    def finalize_for_export(self, lecture_id, path):
+        self._events.put(("export", lecture_id, str(path)))
+        self._tick()
+
     @Slot()
     def _tick(self):
         if self._closed or self._busy:
@@ -97,7 +103,7 @@ class InterpretationController(QObject):
         if self._closed:
             self.shutdown_complete.emit()
             return
-        if more and not self._closed:
+        if (more or not self._events.empty()) and not self._closed:
             self._tick()
 
     def _pump(self):
@@ -158,6 +164,9 @@ class InterpretationController(QObject):
                         continue
                     result = self.notes.finish_lecture(lecture_id, transcript_complete=value)
                     self.final_sections_ready.emit(lecture_id, result)
+                elif kind == "export":
+                    final = FinalNotesService(self.notes.repo, self.notes.ai, self.notes.settings).finalize(lecture_id)
+                    self.final_notes_ready.emit(lecture_id, final, value)
             except Exception as exc:
                 self.processing_error.emit(lecture_id, "interpretation_" + kind + "_failed",
                     f"{type(exc).__name__}: {safe_error_message(exc)}", True)

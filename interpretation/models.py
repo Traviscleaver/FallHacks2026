@@ -162,6 +162,32 @@ class Alignment(Record):
     boundary_warning: str | None = None
 
 
+class FinalBlock(NoteProposal):
+    origin: Literal["lecture", "slide_background", "additional_ai_example", "user_annotation"]
+
+
+class FinalSection(Record):
+    title: str = Field(min_length=1, max_length=500)
+    lecture_section_ids: list[str] = Field(min_length=1)
+    blocks: list[FinalBlock] = Field(min_length=1, max_length=100)
+
+
+class FinalResponse(Record):
+    title: str = Field(min_length=1, max_length=500)
+    sections: list[FinalSection] = Field(min_length=1, max_length=100)
+
+
+class FinalNotes(FinalResponse):
+    id: str
+    lecture_id: str
+    version: int
+    status: Literal["complete", "partial"]
+    input_key: str
+    input_revision: int
+    coverage_warnings: list[str] = Field(default_factory=list)
+    generated_at: str
+
+
 class LectureState(Record):
     lecture_id: str
     revision: int = 0
@@ -175,6 +201,7 @@ class LectureState(Record):
     transcript_complete: bool = False
     finalized: bool = False
     processing_error: str | None = None
+    final_notes: FinalNotes | None = None
 
 
 def validate_span(span: Span, segments: dict[str, Segment]):

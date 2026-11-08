@@ -17,6 +17,7 @@ from tests.test_interpretation import FakeAI, qt_app
 from ui.backend import PartCBackend
 from ui.main import LectureBuddyApp
 from slide_deep_dive import ConceptBreakdown
+from interpretation.models import FinalResponse
 from ui.gemini_stub import GeminiServiceStub
 from live_recording.audio_transcription import TranscriptResult
 
@@ -180,10 +181,19 @@ class UITest(unittest.TestCase):
 
         output_pdf = self.root / "notes.pdf"
         self.backend.export_pdf(output_pdf)
+        self.wait_for(lambda: not self.backend.exporting and output_pdf.is_file())
         from interpretation.pdf_input import extract_pdf
         exported = extract_pdf(output_pdf)
         self.assertIn("Lecture notes", exported.pages[0].text)
         self.assertIn("Definition and example", exported.pages[0].text)
+        self.assertIn("Final organized notes", exported.pages[0].text)
+        self.assertTrue((self.backend.output_dir / "final_notes.json").is_file())
+        self.assertTrue((self.backend.output_dir / "final_notes.md").is_file())
+        self.assertEqual(sum(schema is FinalResponse for schema, _, _ in self.ai.calls), 1)
+        second_export = self.root / "notes-again.pdf"
+        self.backend.export_pdf(second_export)
+        self.wait_for(lambda: not self.backend.exporting and second_export.is_file())
+        self.assertEqual(sum(schema is FinalResponse for schema, _, _ in self.ai.calls), 1)
 
     def test_main_chat_uses_slide_context_and_preserves_history_on_updates(self):
         self.window.workspace.load_pdf(str(self.make_pdf()))
@@ -231,6 +241,30 @@ class UITest(unittest.TestCase):
         self.wait_for(lambda: not self.backend.preparing)
         self.assertIn("failed", self.window.statusBar().currentMessage())
         self.assertTrue(self.window.workspace.btn_import.isEnabled())
+
+    def test_pdf_write_failure_keeps_final_notes_and_retry_reuses_them(self):
+        self.window.workspace.load_pdf(str(self.make_pdf()))
+        self.wait_for(lambda: not self.backend.preparing and self.backend.state.index is not None)
+        text = self.root / "speech.txt"
+        text.write_text("A definition.\n\nA final qualification.", encoding="utf-8")
+        self.backend.import_transcript(str(text))
+        self.wait_for(lambda: not self.backend.analyzing and self.backend.state.finalized)
+        write_pdf = self.backend._write_pdf
+
+        def fail_write(*args):
+            raise OSError("Fixture disk error")
+
+        self.backend._write_pdf = fail_write
+        self.backend.export_pdf(self.root / "failed.pdf")
+        self.wait_for(lambda: not self.backend.exporting)
+        self.assertIn("Fixture disk error", self.window.statusBar().currentMessage())
+        self.assertIsNotNone(self.backend.repo.load(self.backend.lecture_id).final_notes)
+        self.assertTrue((self.backend.output_dir / "final_notes.md").is_file())
+        self.backend._write_pdf = write_pdf
+        output = self.root / "retry.pdf"
+        self.backend.export_pdf(output)
+        self.wait_for(lambda: not self.backend.exporting and output.is_file())
+        self.assertEqual(sum(schema is FinalResponse for schema, _, _ in self.ai.calls), 1)
 
     def test_real_recording_manager_feeds_ui_and_flushes_last_speech_into_notes(self):
         self.window.workspace.load_pdf(str(self.make_pdf()))

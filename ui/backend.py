@@ -14,6 +14,7 @@ from interpretation.incremental_notes import IncrementalNotes
 from interpretation.repository import MemoryRepository
 from interpretation.slide_preparation import SlidePreparation
 from interpretation.workers import InterpretationController
+from interpretation.final_notes import final_markdown
 
 
 class PartCBackend(QObject):
@@ -22,6 +23,7 @@ class PartCBackend(QObject):
     status_changed = Signal(str)
     capabilities_changed = Signal()
     closed = Signal()
+    export_finished = Signal(str)
 
     def __init__(self, ai=None, settings=None, output_root="test_outputs", parent=None):
         super().__init__(parent)
@@ -38,6 +40,7 @@ class PartCBackend(QObject):
         self.pdf_source = None
         self.preparing = False
         self.analyzing = False
+        self.exporting = False
         self.transcript_path = None
         self.closing = False
         self.recording_active = False
@@ -49,11 +52,12 @@ class PartCBackend(QObject):
         self.controller.analysis_progress.connect(self._analysis_progress)
         self.controller.state_updated.connect(self._state_updated)
         self.controller.final_sections_ready.connect(self._finished)
+        self.controller.final_notes_ready.connect(self._export_ready)
         self.controller.processing_error.connect(self._error)
         self.controller.shutdown_complete.connect(self._shutdown_complete)
 
     def import_pdf(self, path):
-        if self.preparing or self.analyzing or self.closing or self.recording_active:
+        if self.preparing or self.analyzing or self.exporting or self.closing or self.recording_active:
             self.status_changed.emit("Please wait for the current operation to finish.")
             return
         self.lecture_id = "ui-" + uuid4().hex
@@ -70,7 +74,7 @@ class PartCBackend(QObject):
         self.controller.prepare_pdf(self.lecture_id, path)
 
     def import_transcript(self, path):
-        if not self.lecture_id or self.preparing or self.analyzing or self.closing or self.recording_active:
+        if not self.lecture_id or self.preparing or self.analyzing or self.exporting or self.closing or self.recording_active:
             self.status_changed.emit("Import slides and wait for preparation before adding a transcript.")
             return
         if self.state and self.state.segments and Path(path).resolve() != self.transcript_path:
@@ -83,7 +87,7 @@ class PartCBackend(QObject):
         self.controller.analyze_transcript_file(self.lecture_id, path)
 
     def begin_live_recording(self):
-        if self.analyzing or self.closing or self.recording_active:
+        if self.analyzing or self.exporting or self.closing or self.recording_active:
             return False
         if self.transcript_path is not None:
             # Continue after a text-file demo using canonical sequence ordering.
@@ -189,7 +193,7 @@ class PartCBackend(QObject):
     def _error(self, lecture_id, code, message, retryable):
         if lecture_id and lecture_id != self.lecture_id:
             return
-        self.preparing = self.analyzing = False
+        self.preparing = self.analyzing = self.exporting = False
         self.status_changed.emit(f"Processing failed: {message}")
         self.capabilities_changed.emit()
 
@@ -274,19 +278,45 @@ class PartCBackend(QObject):
         return title, "LECTURE SECTION" if kind == "section" else "SLIDE MATERIAL", "\n\n".join(body)
 
     def export_pdf(self, path):
+        if self.recording_active or self.preparing or self.analyzing or self.exporting or self.closing:
+            raise ValueError("Wait for recording and note processing to finish before exporting")
+        if not self.current_notes():
+            raise ValueError("Generate lecture notes before exporting")
+        self.exporting = True
+        self.capabilities_changed.emit()
+        self.status_changed.emit("Preparing final study notes for PDF export…")
+        self.controller.finalize_for_export(self.lecture_id, path)
+
+    def _export_ready(self, lecture_id, final, path):
+        if lecture_id != self.lecture_id:
+            return
+        try:
+            self.state = self.repo.load(lecture_id)
+            markdown = final_markdown(final, self.state)
+            self.output_dir.mkdir(parents=True, exist_ok=True)
+            (self.output_dir / "final_notes.json").write_text(final.model_dump_json(indent=2), encoding="utf-8")
+            (self.output_dir / "final_notes.md").write_text(markdown, encoding="utf-8")
+            (self.output_dir / "state.json").write_text(self.state.model_dump_json(indent=2), encoding="utf-8")
+            self._write_pdf(path, markdown)
+            self.status_changed.emit(f"Final notes exported to {path}")
+            self.export_finished.emit(path)
+        except (OSError, ValueError, RuntimeError) as exc:
+            self.status_changed.emit(f"PDF export failed: {exc}. Prepared notes are retained for retry.")
+        finally:
+            self.exporting = False
+            self.capabilities_changed.emit()
+
+    def _write_pdf(self, path, markdown):
         from PySide6.QtGui import QTextDocument
         from PySide6.QtPrintSupport import QPrinter
-        if not self.current_notes():
-            raise ValueError("Generate notes from a transcript before exporting.")
         document = QTextDocument()
-        document.setMarkdown(self.notes_markdown(), QTextDocument.MarkdownFeature.MarkdownNoHTML)
+        document.setMarkdown(markdown, QTextDocument.MarkdownFeature.MarkdownNoHTML)
         printer = QPrinter(QPrinter.PrinterMode.HighResolution)
         printer.setOutputFormat(QPrinter.OutputFormat.PdfFormat)
         printer.setOutputFileName(str(path))
         document.print_(printer)
         if not Path(path).is_file() or Path(path).stat().st_size == 0:
             raise OSError("Could not write PDF")
-        self.status_changed.emit(f"PDF exported to {path}")
 
     def deep_dive_context(self, kind, entity_id):
         """Adapt Part C records to main's existing deep-dive/chat contract.

@@ -13,7 +13,7 @@ except ImportError:
 
 from interpretation.config import Settings
 from interpretation.gemini_adapter import GeminiAdapter, safe_error_message, transport_schema
-from interpretation.models import NoteResponse, SlideExtraction, Analysis
+from interpretation.models import NoteResponse, SlideExtraction, Analysis, FinalResponse
 
 
 class ErrorReportingTest(unittest.TestCase):
@@ -27,7 +27,7 @@ class ErrorReportingTest(unittest.TestCase):
 @unittest.skipUnless(SDK_AVAILABLE, "google-genai is not installed in this Python environment")
 class GeminiSDKTest(unittest.TestCase):
     def test_real_sdk_serializes_every_response_schema(self):
-        for schema in (SlideExtraction, Analysis, NoteResponse):
+        for schema in (SlideExtraction, Analysis, NoteResponse, FinalResponse):
             config = types.GenerateContentConfig(response_mime_type="application/json",
                                                  response_json_schema=transport_schema(schema))
             self.assertIsNotNone(config.response_json_schema)

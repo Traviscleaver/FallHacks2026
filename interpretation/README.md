@@ -7,9 +7,10 @@ Main's microphone/live-transcription service is connected to the transcript UI
 and forwards finalized speech to Part C; stopping flushes remaining speech before
 finishing section notes. Main's deep-dive/chat service is
 connected through an adapter supplying original slide images/text, related
-transcript and section notes. The UI includes a basic
-export of current section notes; lecture-wide final synthesis and MathText
-rendering remain outside this MVP integration.
+transcript and section notes. **Export PDF** now prepares final study notes from
+the original sources and section drafts before exporting. Final content is cached
+for unchanged input and saved independently of the PDF. MathText rendering is
+outside this MVP integration.
 
 Implemented services use Python, Pydantic v2, the `google-genai` SDK and native
 PySide6 signals. They do not create another app shell, recording service or database.
@@ -188,11 +189,11 @@ edits must be persisted through B with a revision increment.
   authenticated Gemini request; live transcript/notes behavior still needs review
   against a real lecture transcript.
 - The UI shows directly related slide material, section notes and transcript,
-  includes main's contextual chat and concept breakdown, and exports current
-  section notes to PDF. Structured chat citations/persistence, selection-offset
-  mapping, lecture-wide final synthesis and typeset equation rendering remain
-  unimplemented. `finish_lecture` closes/generates section notes, not the final
-  synthesized document.
+  includes main's contextual chat and concept breakdown, and synthesizes final
+  study notes when Export PDF is selected. Structured chat citations/persistence,
+  selection-offset mapping and typeset equation rendering remain unimplemented.
+  `finish_lecture` closes/generates section drafts; `FinalNotesService.finalize`
+  prepares the final document using original evidence and validates its sources.
 
 Implementation follows the official
 [structured-output](https://ai.google.dev/gemini-api/docs/structured-output) and

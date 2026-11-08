@@ -13,6 +13,7 @@ from interpretation.config import Settings
 from interpretation.incremental_notes import IncrementalNotes, full_span
 from interpretation.models import (Analysis, Boundary, Formula, NoteResponse, NoteProposal,
     PageMetadata, Segment, SlideExtraction, SubsectionProposal, Visual)
+from interpretation.models import FinalResponse, FinalSection, FinalBlock
 from interpretation.repository import MemoryRepository, StaleSnapshot
 from interpretation.slide_preparation import PDFInput, PageInput, SlidePreparation
 
@@ -67,6 +68,12 @@ class FakeAI:
             return NoteResponse(blocks=[NoteProposal(markdown="- Definition and example, with qualification.",
                 source_spans=[{k: v for k, v in s.items() if k != "text"} for s in payload["speech"]],
                 origin="lecture")])
+        if schema is FinalResponse:
+            return FinalResponse(title="Lecture notes", sections=[FinalSection(
+                title=section["title"], lecture_section_ids=[section["id"]], blocks=[FinalBlock(
+                    markdown="Definition and example, with qualification. Final organized notes.", origin="lecture",
+                    source_spans=[{k: v for k, v in p.items() if k != "text"} for p in section["speech"]])])
+                for section in payload["lecture_sections"]])
         raise AssertionError(schema)
 
 

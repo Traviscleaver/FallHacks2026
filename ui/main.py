@@ -232,16 +232,16 @@ class LectureBuddyApp(QMainWindow):
 
     def update_controls(self):
         active = self.is_recording or self.is_finishing or self.backend.recording_active
-        busy = self.backend.preparing or self.backend.analyzing or self.backend.closing or active
+        busy = self.backend.preparing or self.backend.analyzing or self.backend.exporting or self.backend.closing or active
         self.workspace.btn_import.setEnabled(not busy)
         state = self.backend.state
         can_import = state is not None and state.index is not None and state.index.status in ("ready", "partial")
         self.workspace.btn_transcript.setEnabled(bool(can_import and not busy and not state.finalized and not self.backend.live_segments))
         self.btn_export.setEnabled(bool(self.backend.current_notes()) and not busy)
-        self.btn_record.setEnabled(not self.is_finishing and not self.backend.analyzing
+        self.btn_record.setEnabled(not self.is_finishing and not self.backend.analyzing and not self.backend.exporting
             and not self.backend.closing and not self._close_requested)
         if (self._close_requested and not self._shutdown_started and not active
-                and not self.backend.analyzing):
+                and not self.backend.analyzing and not self.backend.exporting):
             QTimer.singleShot(0, self.close)
 
     def on_export_pdf(self):
@@ -262,7 +262,7 @@ class LectureBuddyApp(QMainWindow):
             if self.is_recording:
                 self.toggle_recording()
                 return
-            if self.is_finishing or self.backend.analyzing or self._shutdown_started:
+            if self.is_finishing or self.backend.analyzing or self.backend.exporting or self._shutdown_started:
                 return
             self._shutdown_started = True
             self.statusBar().showMessage("Finishing the current request before closing…")

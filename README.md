@@ -31,12 +31,16 @@ it does not require PyMuPDF or Pillow.
    **Lecture Sections** panel keeps the outline prepared from your lecture slides,
    with section summaries and page references. Transcript discussions do not
    replace those rows. Click a section to inspect its material and any related notes.
-5. Click **Export PDF** once notes exist. This exports the current section notes
-   with plain formula source text; it is not lecture-wide final synthesis or
-   typeset MathText output.
+5. Click **Export PDF** once recording and section-note processing finish.
+   Gemini first prepares the final study document from the original transcript,
+   slides and section drafts, then the app exports it. There is no separate
+   Finalize button. Re-exporting unchanged material reuses the prepared result.
+   Formulas retain readable source text; MathText typesetting is not included.
 
-Slide indexes and completed transcript-test notes are saved under
+Slide indexes, section drafts and completed final study notes are saved under
 `test_outputs/ui-<session>/`. These are demo artifacts, not a database/reopen flow.
+`notes.md` contains the section drafts; `final_notes.md` and `final_notes.json`
+contain the finalized export content. Final content is retained if PDF writing fails.
 Import the PDF again to start another transcript test. Real Gemini requests incur
 API usage. Closing during processing waits for the background operation to finish.
 
