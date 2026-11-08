@@ -18,13 +18,14 @@ from .backend import PartCBackend
 from .workspace_view import WorkspaceView, bind_debounced
 from .drilldown_view import DrillDownView
 from .gemini_stub import GeminiServiceStub
+from .mascot_widget import HeaderMascot
 from slide_deep_dive import DeepDiveService
 
 
 class LectureBuddyApp(QMainWindow):
     def __init__(self, backend=None, deep_dive=None, recorder=None):
         super().__init__()
-        self.setWindowTitle("Lecture Buddy")
+        self.setWindowTitle("Borp the Study Buddy")
         self.resize(1280, 800)
 
         self.backend = backend or PartCBackend(parent=self)
@@ -62,7 +63,7 @@ class LectureBuddyApp(QMainWindow):
         lbl_date = QLabel("LIVE WORKSPACE")
         lbl_date.setObjectName("WorkspaceBadge")
 
-        lbl_hello = QLabel("Lecture Buddy")
+        lbl_hello = QLabel("Study Buddy")
         lbl_hello.setObjectName("AppTitle")
 
         greeting_col.addWidget(lbl_date)
@@ -116,7 +117,13 @@ class LectureBuddyApp(QMainWindow):
         self.recorder.recording_status.connect(self.on_recording_status)
         self.recorder.recording_error.connect(self.on_recording_error)
         self.recorder.recording_finished.connect(self.on_recording_finished)
-        self.drilldown.backRequested.connect(lambda: self.stack.setCurrentWidget(self.workspace))
+        self.drilldown.backRequested.connect(self.return_to_workspace)
+
+        # Window-level floating mascot overlay on top of everything
+        self.mascot = HeaderMascot(self)
+        self.mascot.move(220, 15)
+        self.mascot.show()
+        self.mascot.raise_()
 
         # Initial stylesheet setup
         self.setStyleSheet(MODERN_DARK_GREY_QSS)
@@ -214,18 +221,34 @@ class LectureBuddyApp(QMainWindow):
 
     def open_detail(self, title: str, badge: str, body: str):
         self.drilldown.load_item(title, badge, body)
-        self.stack.setCurrentWidget(self.drilldown)
+        self._show_drilldown()
 
     def open_resource(self, kind, entity_id):
         self._selected_resource = (kind, entity_id)
         self.drilldown.load_context(self.backend.deep_dive_context(kind, entity_id))
+        self._show_drilldown()
+
+    def _show_drilldown(self):
         self.stack.setCurrentWidget(self.drilldown)
+        # Mascot jumps down onto the AI chat input bubble
+        QTimer.singleShot(60, lambda: self.mascot.jump_to_chat(self.drilldown.chat_input))
+
+    def return_to_workspace(self):
+        self.stack.setCurrentWidget(self.workspace)
+        # Mascot jumps back up to the header patrol
+        if self.mascot.is_on_chat:
+            self.mascot.return_to_header()
+
+    def resizeEvent(self, event):
+        super().resizeEvent(event)
+        if hasattr(self, "mascot"):
+            self.mascot.update_position_from_anchor()
 
     def show_state(self, state):
         if state.lecture_id != self._last_lecture:
             self._last_lecture = state.lecture_id
             self._selected_resource = None
-            self.stack.setCurrentWidget(self.workspace)
+            self.return_to_workspace()
         self.workspace.show_state(state)
         if self._selected_resource:
             self.drilldown.update_context(self.backend.deep_dive_context(*self._selected_resource))

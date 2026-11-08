@@ -1,0 +1,7 @@
+Animation State,Sprite Frame Index,Action / Behavior,Duration (ms),Description
+Idle,0,Resting / Breathing,180,Standard standing pose with big cute eyes
+Walking Right,1,Moving across header rightwards (foot forward),120,"Left leg steps forward, bobbing up 2px"
+Walking Right,2,Moving across header rightwards (foot back),120,"Right leg steps forward, returning to neutral"
+Blinking,3,Blinking eyes,150,Eyes close into horizontal dashes briefly
+Waving Left,4,Waving arm up,140,Left arm raises up to greet user
+Waving Right,5,Waving arm down,140,Arm lowers back down

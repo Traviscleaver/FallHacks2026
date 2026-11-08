@@ -7,7 +7,7 @@ from PySide6.QtWidgets import QWidget, QHBoxLayout, QVBoxLayout, QLabel, QFrame,
 
 
 class CleanSectionRow(QFrame):
-    """Standardized flat row inside the Lecture Sections panel."""
+    """Standardized flat row inside the Live Sections panel."""
     clicked = Signal(str, str, str)
 
     def __init__(self, title: str, meta: str, body: str):
