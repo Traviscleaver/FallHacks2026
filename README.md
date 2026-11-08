@@ -1,3 +1,7 @@
+
+<img width="288" height="48" alt="mascot_spritesheet (2)" src="https://github.com/user-attachments/assets/d5bdfde7-009e-4b10-afed-f182e9fcea1d" />
+
+
 # Lecture Buddy
 
 Lecture Buddy is a desktop study app we built for FallHacks 2026. It brings lecture slides, a live transcript, explanations, and study notes into one workspace.
