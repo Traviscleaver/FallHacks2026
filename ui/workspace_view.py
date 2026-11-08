@@ -8,7 +8,8 @@ from PySide6.QtWidgets import (
     QPushButton, QScrollArea, QFileDialog, QTextEdit
 )
 from components import CleanSectionRow, SlideScrollFeed
-from gemini_stub import GeminiServiceStub
+from gemini_stub import GeminiServiceStub  # also puts repo root on sys.path
+from slide_deep_dive import slide_context_from_pdf
 import fitz
 from PIL import Image
 import html
@@ -28,6 +29,7 @@ def bind_debounced(button: QPushButton, callback):
 
 class WorkspaceView(QWidget):
     openDrillDown = Signal(str, str, str)
+    openSlideDeepDive = Signal(object)  # slide_deep_dive.DeepDiveContext
 
     def __init__(self, gemini: GeminiServiceStub):
         super().__init__()
@@ -250,12 +252,19 @@ class WorkspaceView(QWidget):
         if path:
             self.load_pdf(path)
 
+    def transcript_text(self) -> str:
+        """Finalized transcript so far, one timestamped line per segment."""
+        return "\n".join(f"{ts} {txt}" for ts, txt in self.transcript_lines if ts != "[!]")
+
     def on_slide_clicked(self, slide_num: int):
-        self.openDrillDown.emit(
-            f"Slide {slide_num} Deep-Dive",
-            f"SLIDE {slide_num} OF {self.total_slides}",
-            f"Selected slide {slide_num} from the vertical lecture feed."
-        )
+        if self.doc is None:
+            return
+        try:
+            ctx = slide_context_from_pdf(self.doc, slide_num, self.transcript_text)
+        except Exception as e:
+            print(f"Slide render error: {e}")
+            return
+        self.openSlideDeepDive.emit(ctx)
 
     def load_pdf(self, path: str):
         try:
