@@ -1,75 +1,96 @@
-# Lecture Buddy — FallHacks2026
+# Lecture Buddy
 
-Run the integrated Part C UI from the repository root:
+Lecture Buddy is a desktop study app we built for FallHacks 2026. It brings lecture slides, a live transcript, explanations, and study notes into one workspace.
+
+Keeping up with a lecture can mean listening, reading slides, and writing notes at the same time. Miss an explanation and the next slide can be hard to follow. Lecture Buddy keeps the material together so you can revisit a concept during class and leave with notes to study from afterward.
+
+## What it does
+
+**Bring in your slides.** Import a PDF or drop it into the workspace. The app displays the original pages and prepares an outline of the lecture, including key terms, definitions, formulas, and diagrams. The Lecture Sections panel follows this outline.
+
+**Follow the spoken lecture.** Record through your microphone and see a transcript as speech comes in. Finalized speech is processed in the background to build section notes. Stopping the recording waits for the remaining transcription before finishing those notes.
+
+**Ask about the material.** Click a slide or section to open its detail screen. You can read a concept breakdown, see related notes and transcript, and ask follow-up questions. Gemini receives the selected material and available lecture context so the conversation stays focused on what you are studying.
+
+**Take the notes with you.** Export PDF prepares a final study document from the transcript, slide material, and section drafts, then saves it as a PDF. It organizes the content, keeps source references, and labels additional examples or incomplete coverage. Re-exporting the same lecture reuses the prepared notes.
+
+## Running it
+
+You need Python 3.10 or later and a Gemini API key. From the repository root:
 
 ```bash
-.venv/bin/python -m ui.main
+python3 -m venv .venv
+source .venv/bin/activate
+python -m pip install -r requirements.txt
 ```
 
-Or open your slides immediately:
+Copy `.env.example` to `.env` if you do not already have one. Add your key and choose models available to your API project. Our demo configuration uses:
+
+```dotenv
+GEMINI_KEY=your_api_key
+GEMINI_GENERATION_MODEL=gemini-3.8-flash
+GEMINI_TRANSCRIPTION_MODEL=gemini-3.5-transcribe-live
+```
+
+Chat uses the generation model by default. Set `GEMINI_DEEP_DIVE_MODEL` to choose a separate chat model. Gemini handles slide analysis, transcription, explanations, and note generation, so these features need an internet connection and send lecture material to its API.
+
+Launch the app:
 
 ```bash
-.venv/bin/python -m ui.main --pdf 'Introduction (2).pdf'
+python -m ui.main
 ```
 
-The app reads `GEMINI_KEY` and `GEMINI_GENERATION_MODEL` from `.env`.
-Use the project virtual environment with `google-genai`, `pydantic`,
-`python-dotenv` and PySide6 installed. The UI now uses native Qt PDF extraction;
-it does not require PyMuPDF or Pillow.
+Or open a PDF on startup:
 
-1. Click **Import PDF**, or drop a PDF into the slide panel. Slides appear while
-   Gemini prepares their topics. Progress appears in the status bar.
-2. Click a topic or slide to inspect its actual summary, definitions, formulas,
-   linked notes and related transcript. Main's deep-dive service generates a
-   concept breakdown and answers questions in the chat panel. Return with **Back**.
-3. Click **Start Recording** to stream microphone speech into the live transcript.
-   Interim words are temporary; finalized speech is sent to Part C for notes.
-   Click **Stop Recording** to flush trailing speech and finish section notes.
-   Alternatively, use **Import Transcript** with a UTF-8 text file whose chunks
-   are separated by blank lines, such as `examples/demo_transcript.txt`.
-4. The app processes paragraphs in order and generates section notes. The
-   **Lecture Sections** panel keeps the outline prepared from your lecture slides,
-   with section summaries and page references. Transcript discussions do not
-   replace those rows. Click a section to inspect its material and any related notes.
-5. Click **Export PDF** once recording and section-note processing finish.
-   Gemini first prepares the final study document from the original transcript,
-   slides and section drafts, then the app exports it. There is no separate
-   Finalize button. Re-exporting unchanged material reuses the prepared result.
-   Formulas retain readable source text; MathText typesetting is not included.
+```bash
+python -m ui.main --pdf 'path/to/lecture.pdf'
+```
 
-Slide indexes, section drafts and completed final study notes are saved under
-`test_outputs/ui-<session>/`. These are demo artifacts, not a database/reopen flow.
-`notes.md` contains the section drafts; `final_notes.md` and `final_notes.json`
-contain the finalized export content. Final content is retained if PDF writing fails.
-Import the PDF again to start another transcript test. Real Gemini requests incur
-API usage. Closing during processing waits for the background operation to finish.
+Import your slides, start recording, and click a slide or lecture section to open its detail screen. When the lecture is over, stop recording, wait for the notes to finish, and click **Export PDF**.
 
-The chat implementation from main is connected to selected slides, topics and
-sections. Original slide images/text and related imported transcript are passed
-to it. Background note updates preserve the current conversation; use **Refresh**
-to regenerate the concept breakdown. Chat defaults to `GEMINI_GENERATION_MODEL`;
-set `GEMINI_DEEP_DIVE_MODEL` to choose a separate model.
+### Microphone setup
 
-Recording uses main's existing `LiveRecordingManager` and `GeminiTranscriber`.
-The generation and transcription models are configured separately:
-`GEMINI_TRANSCRIPTION_MODEL` defaults to `gemini-3.5-transcribe-live`.
-On Ubuntu/WSL, install the native microphone dependency if needed:
+On Ubuntu, microphone capture needs PortAudio:
 
 ```bash
 sudo apt-get install libportaudio2
-.venv/bin/python test_program.py --list-devices
 ```
 
-Set optional `AUDIO_INPUT_DEVICE` in `.env` to select a listed microphone ID/name.
-The operating system must expose an input device to the process (including WSL
-audio support when running under WSL). Errors appear in the transcript/status bar.
-The standalone microphone test remains available as `test_program.py`.
-Completed recording transcripts are saved as `transcript.txt` alongside the notes.
-
-Run the automated tests without credentials or microphone access:
+List the input devices the app can see with:
 
 ```bash
-QT_QPA_PLATFORM=offscreen .venv/bin/python -m unittest discover -s tests -v
+python test_program.py --list-devices
 ```
 
-See [Part C integration details](interpretation/README.md) for service interfaces.
+Set `AUDIO_INPUT_DEVICE` in `.env` to a listed device ID or name to choose a specific microphone. WSL needs audio forwarding from Windows; if Linux reports no input devices, the app cannot record until that connection is available.
+
+## Trying it without a microphone
+
+Import a slide deck and wait for its sections to appear. Click **Import Transcript** and select `examples/demo_transcript.txt`, or use your own UTF-8 text file with blank lines between speech chunks.
+
+The included example moves from classification to clustering and ends with a qualification about similarity measures. It is sample speech for testing. A transcript that matches your own slides gives a better picture of how the app connects spoken explanations to the deck.
+
+Session files are saved under `test_outputs/ui-<session>/`. This includes the transcript, slide index, section drafts, and final notes in Markdown and JSON. The PDF goes wherever you choose in the export dialog. Final note content is saved separately, so a PDF write failure does not discard it.
+
+## How it is built
+
+The application is written in Python. PySide6 provides the desktop interface, PDF rendering, and export. Google Gemini handles model requests, `sounddevice` captures microphone audio, and Pydantic validates structured responses and source references. Recording and model requests run in background workers.
+
+- `ui/` contains the workspace, detail screen, and application connections.
+- `live_recording/` handles microphone capture and streaming transcription.
+- `interpretation/` prepares slides, processes transcript sections, and generates notes.
+- `slide_deep_dive/` handles concept explanations and contextual chat.
+
+Run the automated tests without a microphone or API key:
+
+```bash
+QT_QPA_PLATFORM=offscreen python -m unittest discover -s tests -v
+```
+
+For a command-line test with real Gemini requests:
+
+```bash
+python -m interpretation.smoke_test --pdf 'path/to/lecture.pdf' --transcript examples/demo_transcript.txt
+```
+
+This is a hackathon build. Saved lecture files are available on disk, but the UI does not reopen previous sessions yet. Chat history stays in the current detail screen, and exported equations use readable formula text rather than full mathematical typesetting. Generated explanations and notes should still be checked against the course material.
