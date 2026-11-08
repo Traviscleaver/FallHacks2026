@@ -157,8 +157,5 @@ class GeminiServiceStub(QObject):
     def request_im_lost(self, slide):
         print(f"[GeminiStub] 'I'm Lost' requested on slide {slide}")
 
-    def ask_chat(self, q, ctx):
-        return f"Based on {ctx}: The weight matrix W scales the inputs before activation."
-
     def export_pdf(self, path):
         print(f"[GeminiStub] Exported PDF to {path}")

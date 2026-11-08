@@ -12,6 +12,7 @@ from theme import MODERN_DARK_GREY_QSS, MODERN_LIGHT_QSS
 from gemini_stub import GeminiServiceStub
 from workspace_view import WorkspaceView, bind_debounced
 from drilldown_view import DrillDownView
+from slide_deep_dive import DeepDiveService
 
 
 class LectureBuddyApp(QMainWindow):
@@ -80,13 +81,15 @@ class LectureBuddyApp(QMainWindow):
 
         self.stack = QStackedWidget()
         self.workspace = WorkspaceView(self.gemini)
-        self.drilldown = DrillDownView(self.gemini)
+        self.deep_dive = DeepDiveService(api_key=self.gemini.api_key, parent=self)
+        self.drilldown = DrillDownView(self.deep_dive)
 
         self.stack.addWidget(self.workspace)
         self.stack.addWidget(self.drilldown)
         root_layout.addWidget(self.stack, stretch=1)
 
         self.workspace.openDrillDown.connect(self.open_detail)
+        self.workspace.openSlideDeepDive.connect(self.open_slide)
         self.drilldown.backRequested.connect(lambda: self.stack.setCurrentWidget(self.workspace))
         self.gemini.recording_status.connect(self.on_recording_status)
 
@@ -155,6 +158,7 @@ class LectureBuddyApp(QMainWindow):
 
     def closeEvent(self, event):
         self.gemini.shutdown()
+        self.deep_dive.shutdown()
         super().closeEvent(event)
 
     def tick(self):
@@ -167,7 +171,11 @@ class LectureBuddyApp(QMainWindow):
         return f"{m:02d}:{s:02d}"
 
     def open_detail(self, title: str, badge: str, body: str):
-        self.drilldown.load_item(title, badge, body)
+        self.drilldown.load_item(title, badge, body, self.workspace.transcript_text)
+        self.stack.setCurrentWidget(self.drilldown)
+
+    def open_slide(self, ctx):
+        self.drilldown.load_context(ctx)
         self.stack.setCurrentWidget(self.drilldown)
 
     def on_export_pdf(self):
