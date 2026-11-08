@@ -1,29 +1,41 @@
 # main.py — Standardized Shell with Smooth Color-Crossfade Theme Animation
 
 import sys
+import os
 from pathlib import Path
+# Keep the original script entry point working alongside python -m ui.main.
+if __package__ in (None, ""):
+    sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+    __package__ = "ui"
 from PySide6.QtCore import Qt, QTimer, Slot, QVariantAnimation
 from PySide6.QtGui import QColor
 from PySide6.QtWidgets import (
     QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
-    QLabel, QPushButton, QStackedWidget, QFileDialog
+    QLabel, QPushButton, QStackedWidget, QFileDialog, QMessageBox
 )
-from theme import MODERN_DARK_GREY_QSS, MODERN_LIGHT_QSS
-from gemini_stub import GeminiServiceStub
-from workspace_view import WorkspaceView, bind_debounced
-from drilldown_view import DrillDownView
+from .theme import MODERN_DARK_GREY_QSS, MODERN_LIGHT_QSS
+from .backend import PartCBackend
+from .workspace_view import WorkspaceView, bind_debounced
+from .drilldown_view import DrillDownView
+from .gemini_stub import GeminiServiceStub
 from slide_deep_dive import DeepDiveService
 
 
 class LectureBuddyApp(QMainWindow):
-    def __init__(self):
+    def __init__(self, backend=None, deep_dive=None, recorder=None):
         super().__init__()
         self.setWindowTitle("Lecture Buddy")
         self.resize(1280, 800)
 
-        self.gemini = GeminiServiceStub()
+        self.backend = backend or PartCBackend(parent=self)
+        self.recorder = recorder or GeminiServiceStub()
+        self._selected_resource = None
+        self._last_lecture = None
+        self._backend_closed = False
         self.is_recording = False
         self.is_finishing = False
+        self._close_requested = False
+        self._shutdown_started = False
         self.is_light_mode = False
         self.seconds = 0
 
@@ -63,7 +75,7 @@ class LectureBuddyApp(QMainWindow):
         self.btn_theme.setCursor(Qt.PointingHandCursor)
         bind_debounced(self.btn_theme, self.toggle_theme)
 
-        self.btn_record = QPushButton(f"● Start Recording ({self.fmt(self.seconds)})")
+        self.btn_record = QPushButton("● Start Recording (00:00)")
         self.btn_record.setObjectName("RecordButton")
         self.btn_record.setCursor(Qt.PointingHandCursor)
         bind_debounced(self.btn_record, self.toggle_recording)
@@ -80,21 +92,36 @@ class LectureBuddyApp(QMainWindow):
         root_layout.addWidget(header)
 
         self.stack = QStackedWidget()
-        self.workspace = WorkspaceView(self.gemini)
-        self.deep_dive = DeepDiveService(api_key=self.gemini.api_key, parent=self)
+        self.workspace = WorkspaceView()
+        self.deep_dive = deep_dive or DeepDiveService(
+            model=os.getenv("GEMINI_DEEP_DIVE_MODEL") or self.backend.settings.model, parent=self)
         self.drilldown = DrillDownView(self.deep_dive)
 
         self.stack.addWidget(self.workspace)
         self.stack.addWidget(self.drilldown)
         root_layout.addWidget(self.stack, stretch=1)
 
-        self.workspace.openDrillDown.connect(self.open_detail)
-        self.workspace.openSlideDeepDive.connect(self.open_slide)
+        self.workspace.pdfRequested.connect(self.backend.import_pdf)
+        self.workspace.transcriptRequested.connect(self.backend.import_transcript)
+        self.workspace.resourceSelected.connect(self.open_resource)
+        self.backend.pdf_ready.connect(self.workspace.show_pdf)
+        self.backend.state_ready.connect(self.show_state)
+        self.backend.status_changed.connect(self.statusBar().showMessage)
+        self.backend.capabilities_changed.connect(self.update_controls)
+        self.backend.closed.connect(self._on_backend_closed)
+        self.recorder.transcript_interim.connect(self.workspace.on_transcript_interim)
+        self.recorder.transcript_final.connect(self.workspace.on_transcript_final)
+        self.recorder.transcript_segment.connect(self.backend.accept_live_segment)
+        self.recorder.gap_recorded.connect(self.backend.accept_live_gap)
+        self.recorder.recording_status.connect(self.on_recording_status)
+        self.recorder.recording_error.connect(self.on_recording_error)
+        self.recorder.recording_finished.connect(self.on_recording_finished)
         self.drilldown.backRequested.connect(lambda: self.stack.setCurrentWidget(self.workspace))
-        self.gemini.recording_status.connect(self.on_recording_status)
 
         # Initial stylesheet setup
         self.setStyleSheet(MODERN_DARK_GREY_QSS)
+        self.statusBar().showMessage("Import a PDF to prepare its slide topics.")
+        self.update_controls()
 
     def toggle_theme(self):
         self.is_light_mode = not self.is_light_mode
@@ -132,34 +159,49 @@ class LectureBuddyApp(QMainWindow):
 
     def toggle_recording(self):
         if self.is_finishing:
-            return  # waiting for the last finals; "stopped" clears this
-        if not self.is_recording:
-            if not self.gemini.start_recording():
-                return  # error already shown in the transcript panel
-            self.is_recording = True
-            self.timer.start(1000)
-            self.btn_record.setText(f"■ Stop Recording ({self.fmt(self.seconds)})")
-        else:
+            return
+        if self.is_recording:
             self.is_recording = False
-            self.timer.stop()
-            self.gemini.stop_recording()
             self.is_finishing = True
+            self.timer.stop()
             self.btn_record.setText(f"… Finishing ({self.fmt(self.seconds)})")
+            self.update_controls()
+            self.recorder.stop_recording()
+        elif self.backend.begin_live_recording():
+            self.workspace.begin_live_transcript()
+            self.is_recording = True
+            if self.recorder.start_recording():
+                self.timer.start(1000)
+                self.btn_record.setText(f"■ Stop Recording ({self.fmt(self.seconds)})")
+            else:
+                self.is_recording = False
+                self.backend.cancel_live_start()
+                self.btn_record.setText(f"● Start Recording ({self.fmt(self.seconds)})")
+            self.update_controls()
 
     @Slot(str)
-    def on_recording_status(self, status: str):
-        if status == "stopped":
-            self.is_finishing = False
-            self.btn_record.setText(f"● Start Recording ({self.fmt(self.seconds)})")
-        elif status == "error" and self.is_recording:
-            self.is_recording = False
+    def on_recording_status(self, status):
+        self.workspace.on_recording_status(status)
+        if status == "stopping":
+            self.is_recording, self.is_finishing = False, True
             self.timer.stop()
-            self.btn_record.setText(f"● Start Recording ({self.fmt(self.seconds)})")
+        elif status in ("stopped", "error"):
+            self.is_recording = self.is_finishing = False
+            self.timer.stop()
+            if status == "error":
+                self.backend.cancel_live_start()
+        self.btn_record.setText(("… Finishing" if self.is_finishing else
+            "■ Stop Recording" if self.is_recording else "● Start Recording") + f" ({self.fmt(self.seconds)})")
+        self.update_controls()
 
-    def closeEvent(self, event):
-        self.gemini.shutdown()
-        self.deep_dive.shutdown()
-        super().closeEvent(event)
+    @Slot(str)
+    def on_recording_error(self, message):
+        self.workspace.on_recording_error(message)
+        self.statusBar().showMessage("Recording: " + message)
+
+    @Slot(bool)
+    def on_recording_finished(self, complete):
+        self.backend.finish_live_recording(complete)
 
     def tick(self):
         self.seconds += 1
@@ -171,22 +213,80 @@ class LectureBuddyApp(QMainWindow):
         return f"{m:02d}:{s:02d}"
 
     def open_detail(self, title: str, badge: str, body: str):
-        self.drilldown.load_item(title, badge, body, self.workspace.transcript_text)
+        self.drilldown.load_item(title, badge, body)
         self.stack.setCurrentWidget(self.drilldown)
 
-    def open_slide(self, ctx):
-        self.drilldown.load_context(ctx)
+    def open_resource(self, kind, entity_id):
+        self._selected_resource = (kind, entity_id)
+        self.drilldown.load_context(self.backend.deep_dive_context(kind, entity_id))
         self.stack.setCurrentWidget(self.drilldown)
+
+    def show_state(self, state):
+        if state.lecture_id != self._last_lecture:
+            self._last_lecture = state.lecture_id
+            self._selected_resource = None
+            self.stack.setCurrentWidget(self.workspace)
+        self.workspace.show_state(state)
+        if self._selected_resource:
+            self.drilldown.update_context(self.backend.deep_dive_context(*self._selected_resource))
+
+    def update_controls(self):
+        active = self.is_recording or self.is_finishing or self.backend.recording_active
+        busy = self.backend.preparing or self.backend.analyzing or self.backend.closing or active
+        self.workspace.btn_import.setEnabled(not busy)
+        state = self.backend.state
+        can_import = state is not None and state.index is not None and state.index.status in ("ready", "partial")
+        self.workspace.btn_transcript.setEnabled(bool(can_import and not busy and not state.finalized and not self.backend.live_segments))
+        self.btn_export.setEnabled(bool(self.backend.current_notes()) and not busy)
+        self.btn_record.setEnabled(not self.is_finishing and not self.backend.analyzing
+            and not self.backend.closing and not self._close_requested)
+        if (self._close_requested and not self._shutdown_started and not active
+                and not self.backend.analyzing):
+            QTimer.singleShot(0, self.close)
 
     def on_export_pdf(self):
-        default_pdf = str(Path.home() / "Desktop" / "Lecture_Notes.pdf")
+        default_pdf = str(Path.cwd() / "Lecture_Notes.pdf")
         path, _ = QFileDialog.getSaveFileName(self, "Export Notes as PDF", default_pdf, "PDF (*.pdf)")
         if path:
-            self.gemini.export_pdf(path)
+            try:
+                self.backend.export_pdf(path)
+            except (OSError, ValueError) as exc:
+                QMessageBox.warning(self, "Export failed", str(exc))
+
+    def closeEvent(self, event):
+        if self._backend_closed:
+            event.accept()
+        else:
+            event.ignore()
+            self._close_requested = True
+            if self.is_recording:
+                self.toggle_recording()
+                return
+            if self.is_finishing or self.backend.analyzing or self._shutdown_started:
+                return
+            self._shutdown_started = True
+            self.statusBar().showMessage("Finishing the current request before closing…")
+            self.recorder.shutdown()
+            self.deep_dive.shutdown()
+            self.backend.shutdown()
+
+    def _on_backend_closed(self):
+        self._backend_closed = True
+        self.close()
 
 
 if __name__ == "__main__":
+    import argparse
+    parser = argparse.ArgumentParser(description="Lecture Buddy: slides, live recording, notes and chat")
+    parser.add_argument("--pdf", help="Open a lecture PDF on startup")
+    args = parser.parse_args()
     app = QApplication(sys.argv)
-    window = LectureBuddyApp()
+    try:
+        window = LectureBuddyApp()
+    except (ValueError, ImportError) as exc:
+        QMessageBox.critical(None, "Setup required", f"Check .env and the project dependencies.\n{type(exc).__name__}")
+        raise SystemExit(1)
     window.show()
+    if args.pdf:
+        QTimer.singleShot(0, lambda: window.workspace.load_pdf(args.pdf))
     sys.exit(app.exec())

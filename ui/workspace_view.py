@@ -1,43 +1,46 @@
 # workspace_view.py — Symmetrical 2-Column Grid with Compact Blue Transcript
 
 from pathlib import Path
+from html import escape
 from PySide6.QtCore import Qt, Signal, QTimer
 from PySide6.QtGui import QPixmap, QImage
 from PySide6.QtWidgets import (
     QWidget, QHBoxLayout, QVBoxLayout, QFrame, QLabel,
     QPushButton, QScrollArea, QFileDialog, QTextEdit
 )
-from components import CleanSectionRow, SlideScrollFeed
-from gemini_stub import GeminiServiceStub  # also puts repo root on sys.path
-from slide_deep_dive import slide_context_from_pdf
-import fitz
-from PIL import Image
-import html
-import io
+from .components import CleanSectionRow, SlideScrollFeed
 
 
 def bind_debounced(button: QPushButton, callback):
     """Prevents rapid double-clicks from bugging out UI transitions."""
+    import time
+    previous = [float("-inf")]
     def _wrapped():
         if not button.isEnabled():
             return
-        button.setEnabled(False)
-        QTimer.singleShot(280, lambda: button.setEnabled(True))
+        now = time.monotonic()
+        if now - previous[0] < 0.28:
+            return
+        previous[0] = now
         callback()
     button.clicked.connect(_wrapped)
 
 
 class WorkspaceView(QWidget):
-    openDrillDown = Signal(str, str, str)
-    openSlideDeepDive = Signal(object)  # slide_deep_dive.DeepDiveContext
+    pdfRequested = Signal(str)
+    transcriptRequested = Signal(str)
+    resourceSelected = Signal(str, str)
 
-    def __init__(self, gemini: GeminiServiceStub):
+    def __init__(self):
         super().__init__()
-        self.gemini = gemini
         self.pdf_path = None
-        self.doc = None
+        self.state = None
         self.total_slides = 0
         self.is_light_mode = False
+        self.live_mode = False
+        self.live_lines = []
+        self.interim_text = ""
+        self.recording_message = ""
 
         layout = QHBoxLayout(self)
         layout.setContentsMargins(20, 16, 20, 20)
@@ -61,7 +64,7 @@ class WorkspaceView(QWidget):
         sh_layout.addWidget(title)
         sh_layout.addStretch()
 
-        btn_import = QPushButton("Import PDF")
+        btn_import = self.btn_import = QPushButton("Import PDF")
         btn_import.setObjectName("SubtleActionButton")
         btn_import.setCursor(Qt.PointingHandCursor)
         bind_debounced(btn_import, self.browse_pdf)
@@ -83,12 +86,12 @@ class WorkspaceView(QWidget):
         self.lbl_details.setObjectName("MutedText")
         slide_layout.addWidget(self.lbl_details)
 
-        # RIGHT COLUMN: LIVE SECTIONS (TOP) + TRANSCRIPT (BOTTOM)
+        # RIGHT COLUMN: LECTURE OUTLINE (TOP) + TRANSCRIPT (BOTTOM)
         right_col = QVBoxLayout()
         right_col.setContentsMargins(0, 0, 0, 0)
         right_col.setSpacing(16)
 
-        # 1. LIVE SECTIONS PANEL
+        # 1. LECTURE SECTIONS PANEL
         sections_card = QFrame()
         sections_card.setObjectName("PanelCard")
         sec_layout = QVBoxLayout(sections_card)
@@ -101,12 +104,12 @@ class WorkspaceView(QWidget):
         sec_h_layout = QHBoxLayout(sec_header)
         sec_h_layout.setContentsMargins(0, 0, 0, 0)
 
-        sec_title = QLabel("Live Sections")
+        sec_title = QLabel("Lecture Sections")
         sec_title.setObjectName("PanelTitle")
         sec_h_layout.addWidget(sec_title)
         sec_h_layout.addStretch()
 
-        sec_count = QLabel("3 topics")
+        sec_count = self.sec_count = QLabel("0 sections")
         sec_count.setObjectName("MutedText")
         sec_h_layout.addWidget(sec_count)
         sec_layout.addWidget(sec_header)
@@ -120,20 +123,11 @@ class WorkspaceView(QWidget):
         sec_scroll.setWidgetResizable(True)
         sec_container = QWidget()
         sec_container.setObjectName("InnerCanvas")
-        sec_list = QVBoxLayout(sec_container)
+        sec_list = self.sec_list = QVBoxLayout(sec_container)
         sec_list.setContentsMargins(0, 0, 0, 0)
         sec_list.setSpacing(0)
 
-        sections_data = [
-            ("Course Logistics & Rubric", "00:00", "Grading breakdown and midterm schedule."),
-            ("Introduction to Material", "03:16", "Core definitions and foundational concepts."),
-            ("The Perceptron Model", "08:12", "Dot product of weights and inputs plus bias."),
-        ]
-        for t, meta, body in sections_data:
-            row = CleanSectionRow(t, meta, body)
-            row.clicked.connect(self.openDrillDown.emit)
-            sec_list.addWidget(row)
-
+        sec_list.addWidget(QLabel("Import lecture slides to see their sections."))
         sec_list.addStretch()
         sec_scroll.setWidget(sec_container)
         sec_layout.addWidget(sec_scroll, stretch=1)
@@ -151,14 +145,18 @@ class WorkspaceView(QWidget):
         th_layout = QHBoxLayout(trans_header)
         th_layout.setContentsMargins(0, 0, 0, 0)
 
-        trans_title = QLabel("Live Audio Transcript")
+        trans_title = QLabel("Lecture Transcript")
         trans_title.setObjectName("PanelTitle")
         th_layout.addWidget(trans_title)
         th_layout.addStretch()
 
-        self.trans_status = QLabel("IDLE")
-        self.trans_status.setObjectName("WorkspaceBadge")
-        th_layout.addWidget(self.trans_status)
+        trans_status = self.trans_status = QLabel("IDLE")
+        trans_status.setObjectName("WorkspaceBadge")
+        th_layout.addWidget(trans_status)
+        self.btn_transcript = QPushButton("Import Transcript")
+        self.btn_transcript.setEnabled(False)
+        self.btn_transcript.clicked.connect(self.browse_transcript)
+        th_layout.addWidget(self.btn_transcript)
         trans_layout.addWidget(trans_header)
 
         div3 = QFrame()
@@ -169,15 +167,9 @@ class WorkspaceView(QWidget):
         self.transcript_box = QTextEdit()
         self.transcript_box.setReadOnly(True)
         self.transcript_box.setObjectName("TranscriptViewer")
-        self.transcript_lines: list[tuple[str, str]] = []
-        self.interim_text = ""
+        self.transcript_lines = []
         self.render_transcript()
         trans_layout.addWidget(self.transcript_box, stretch=1)
-
-        self.gemini.transcript_interim.connect(self.on_transcript_interim)
-        self.gemini.transcript_final.connect(self.on_transcript_final)
-        self.gemini.recording_status.connect(self.on_recording_status)
-        self.gemini.recording_error.connect(self.on_recording_error)
 
         right_col.addWidget(sections_card, stretch=6)
         right_col.addWidget(trans_card, stretch=4)
@@ -187,55 +179,50 @@ class WorkspaceView(QWidget):
 
     def render_transcript(self):
         color = "#2563EB" if self.is_light_mode else "#60A5FA"
-        muted = "#71717A" if self.is_light_mode else "#A1A1AA"
         html_blocks = [
-            f"<div style='color:{color}; margin-bottom:5px; line-height:1.25;'>"
-            f"{ts}: {html.escape(txt)}</div>"
+            f"<div style='color:{color}; margin-bottom:5px; line-height:1.25;'>{escape(ts)}: {escape(txt)}</div>"
             for ts, txt in self.transcript_lines
         ]
         if self.interim_text:
-            html_blocks.append(
-                f"<div style='color:{muted}; font-style:italic; line-height:1.25;'>"
-                f"{html.escape(self.interim_text)}</div>"
-            )
-        if not html_blocks:
-            html_blocks.append(
-                f"<div style='color:{muted};'>Press Start Recording to begin the live transcript.</div>"
-            )
-        self.transcript_box.setHtml("".join(html_blocks))
+            html_blocks.append(f"<p style='color:#8E8E93'><i>{escape(self.interim_text)}</i></p>")
+        if self.recording_message:
+            html_blocks.append(f"<p style='color:#F87171'>{escape(self.recording_message)}</p>")
+        self.transcript_box.setHtml("".join(html_blocks) or "Start Recording for a live transcript, or import a transcript text file.")
         bar = self.transcript_box.verticalScrollBar()
         bar.setValue(bar.maximum())
 
-    # ----------------------------------------------------- live transcript
+    def begin_live_transcript(self):
+        if not self.live_mode:
+            self.live_lines = list(self.transcript_lines)
+        self.live_mode = True
+        self.interim_text = self.recording_message = ""
+        self.transcript_lines = list(self.live_lines)
+        self.render_transcript()
 
-    def on_transcript_interim(self, text: str):
+    def on_transcript_interim(self, text):
         self.interim_text = " ".join(text.split())
         self.render_transcript()
 
-    def on_transcript_final(self, text: str, start_seconds: float):
-        m, s = divmod(int(start_seconds), 60)
-        self.transcript_lines.append((f"[{m:02d}:{s:02d}]", text))
+    def on_transcript_final(self, text, start_seconds):
+        minutes, seconds = divmod(int(start_seconds), 60)
+        self.live_lines.append((f"[{minutes:02d}:{seconds:02d}]", text))
+        self.transcript_lines = list(self.live_lines)
         self.interim_text = ""
         self.render_transcript()
 
-    def on_recording_status(self, status: str):
-        labels = {
-            "connecting": "CONNECTING",
-            "recording": "LIVE STREAM",
-            "reconnecting": "RECONNECTING",
-            "stopping": "FINISHING",
-            "stopped": "IDLE",
-            "error": "ERROR",
-        }
+    def on_recording_status(self, status):
+        labels = {"connecting": "CONNECTING", "recording": "LIVE STREAM", "reconnecting": "RECONNECTING",
+                  "stopping": "FINISHING", "stopped": "TRANSCRIPT READY", "error": "ERROR"}
         self.trans_status.setText(labels.get(status, status.upper()))
-        if status == "stopped" and self.interim_text:
-            # Nothing more will finalize it, so drop the stale interim line.
+        if status in ("stopped", "error"):
             self.interim_text = ""
-            self.render_transcript()
+        if status == "recording":
+            self.recording_message = ""
+        self.render_transcript()
 
-    def on_recording_error(self, message: str):
+    def on_recording_error(self, message):
+        self.recording_message = message
         self.trans_status.setToolTip(message)
-        self.transcript_lines.append(("[!]", message))
         self.render_transcript()
 
     def set_theme_mode(self, is_light: bool):
@@ -252,38 +239,56 @@ class WorkspaceView(QWidget):
         if path:
             self.load_pdf(path)
 
-    def transcript_text(self) -> str:
-        """Finalized transcript so far, one timestamped line per segment."""
-        return "\n".join(f"{ts} {txt}" for ts, txt in self.transcript_lines if ts != "[!]")
-
     def on_slide_clicked(self, slide_num: int):
-        if self.doc is None:
-            return
-        try:
-            ctx = slide_context_from_pdf(self.doc, slide_num, self.transcript_text)
-        except Exception as e:
-            print(f"Slide render error: {e}")
-            return
-        self.openSlideDeepDive.emit(ctx)
+        if self.state and self.state.index and 0 < slide_num <= len(self.state.index.slides):
+            self.resourceSelected.emit("slide", self.state.index.slides[slide_num - 1].id)
 
     def load_pdf(self, path: str):
-        try:
+        if self.btn_import.isEnabled():
             self.pdf_path = path
-            self.doc = fitz.open(path)
-            self.total_slides = len(self.doc)
-            pixmaps = []
-            for page_num in range(self.total_slides):
-                page = self.doc.load_page(page_num)
-                pix = page.get_pixmap(matrix=fitz.Matrix(3.0, 3.0))
-                img = Image.open(io.BytesIO(pix.tobytes("png")))
-                buffer = io.BytesIO()
-                img.save(buffer, format="PNG")
-                qimg = QImage.fromData(buffer.getvalue())
-                pixmaps.append(QPixmap.fromImage(qimg))
+            self.pdfRequested.emit(path)
 
-            self.viewport.set_slides(pixmaps)
-            self.lbl_details.setText(f"Loaded: {Path(path).name}  •  {self.total_slides} Slides")
-            self.gemini.import_slides(path)
-        except Exception as e:
-            self.lbl_details.setText("Error loading PDF")
-            print(f"PDF Load Error: {e}")
+    def show_pdf(self, source):
+        self.total_slides = len(source.pages)
+        self.viewport.set_slides([QPixmap.fromImage(QImage.fromData(p.image_png)) for p in source.pages])
+        name = Path(self.pdf_path).name if self.pdf_path else "Lecture PDF"
+        self.lbl_details.setText(f"Loaded: {name} • {self.total_slides} slides")
+
+    def browse_transcript(self):
+        path, _ = QFileDialog.getOpenFileName(self, "Import lecture transcript", "", "Text files (*.txt);;All files (*)")
+        if path:
+            self.transcriptRequested.emit(path)
+
+    def show_state(self, state):
+        if self.state is None or self.state.lecture_id != state.lecture_id:
+            self.viewport.set_slides([])
+            self.lbl_details.setText("Opening PDF…" if self.pdf_path else "No PDF loaded")
+            self.live_mode = False
+            self.live_lines = []
+            self.interim_text = self.recording_message = ""
+            self.trans_status.setText("IDLE")
+        self.state = state
+        self.transcript_lines = (list(self.live_lines) if self.live_mode else
+            [(f"Paragraph {s.sequence + 1}", s.text) for s in state.segments])
+        self.render_transcript()
+        while self.sec_list.count():
+            item = self.sec_list.takeAt(0)
+            if item.widget():
+                item.widget().deleteLater()
+        rows = []
+        # This panel is the prepared lecture outline, independent of transcript
+        # discussion occurrences and their open/closed/matched state.
+        if state.index:
+            page_numbers = {slide.id: slide.page_number for slide in state.index.slides}
+            for group in state.index.subsections:
+                pages = sorted({page_numbers[sid] for sid in group.slide_ids})
+                meta = ("Page " if len(pages) == 1 else "Pages ") + ", ".join(map(str, pages))
+                rows.append(("subsection", group.id, group.title, meta, group.summary[:250]))
+        for kind, ident, title, meta, body in rows:
+            row = CleanSectionRow(title, meta, body)
+            row.clicked.connect(lambda *args, k=kind, key=ident: self.resourceSelected.emit(k, key))
+            self.sec_list.addWidget(row)
+        if not rows:
+            self.sec_list.addWidget(QLabel("Lecture sections will appear here after slide preparation."))
+        self.sec_list.addStretch()
+        self.sec_count.setText(f"{len(rows)} section" + ("" if len(rows) == 1 else "s"))

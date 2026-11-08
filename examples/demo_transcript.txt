@@ -1,0 +1,9 @@
+Today we are introducing data mining. The goal is to find useful patterns in data. Different tasks answer different questions, so we first need to decide what we want to learn from a dataset.
+
+For classification, we learn from examples with known class labels and predict a label for a new example. For instance, a collection of emails already marked spam or not spam can be used to learn how to classify a new email. This is a demonstration example, not a transcript of an actual professor.
+
+Now let us move on to clustering. In clustering, examples do not come with the class labels that we are trying to predict. Instead, we group examples according to their similarity.
+
+For example, we could group customers with similar purchasing behavior. The groups are inferred from the data rather than supplied as the correct answers. This is still the same clustering topic, and another example does not necessarily begin a new section.
+
+One important qualification is that a clustering result depends on how we represent the data and measure similarity. A grouping can be mathematically convenient without being useful for the actual application. Keep that limitation in the notes.

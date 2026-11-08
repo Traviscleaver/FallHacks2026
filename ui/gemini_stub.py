@@ -22,6 +22,7 @@ if str(_REPO_ROOT) not in sys.path:
 
 from live_recording.audio_recording import SAMPLE_RATE, SoundDeviceAudioSource  # noqa: E402
 from live_recording.audio_transcription import GeminiTranscriber  # noqa: E402
+from live_recording.audio_transcription import DEFAULT_MODEL  # noqa: E402
 from live_recording.live_recording import (  # noqa: E402
     LectureStatus,
     LiveRecordingManager,
@@ -55,12 +56,18 @@ class GeminiServiceStub(QObject):
     recording_status = Signal(str)
     # Human-readable error message.
     recording_error = Signal(str)
+    transcript_segment = Signal(object, float)  # original stable record, session offset in seconds
+    recording_finished = Signal(bool)  # False if transcription failed or timed out
+    gap_recorded = Signal(int, int)  # sample offsets across recording sessions
 
-    def __init__(self, device_id: Optional[str] = None):
+    def __init__(self, device_id: Optional[str] = None, *, source_factory=None, transcriber_factory=None):
         super().__init__()
         _load_dotenv(_REPO_ROOT / ".env")
         self.api_key = os.environ.get("GEMINI_KEY", "")
-        self.device_id = device_id
+        self.device_id = device_id or os.environ.get("AUDIO_INPUT_DEVICE") or None
+        self._source_factory = source_factory or SoundDeviceAudioSource
+        self._transcriber_factory = transcriber_factory
+        self._had_errors = False
         self._manager: Optional[LiveRecordingManager] = None
         self._lecture_id = ""
         # Each start() restarts the manager's sample timeline at 0, so keep
@@ -73,6 +80,7 @@ class GeminiServiceStub(QObject):
 
     def start_recording(self) -> bool:
         """Open the mic and begin streaming to Gemini. Returns False on failure."""
+        self._had_errors = False
         manager = self._ensure_manager()
         if manager is None:
             return False
@@ -103,23 +111,30 @@ class GeminiServiceStub(QObject):
         """Blocking stop for application exit."""
         if self._manager is not None and self._manager.is_active():
             self._manager.stop(timeout=5.0)
+        if self._manager is not None and not self._manager.is_active():
+            if LiveRecordingManager.has_instance() and LiveRecordingManager.instance() is self._manager:
+                LiveRecordingManager.release()
+            self._manager = None
 
     def _ensure_manager(self) -> Optional[LiveRecordingManager]:
         if self._manager is not None:
             return self._manager
         try:
-            transcriber = GeminiTranscriber(api_key=self.api_key or None)
+            transcriber = (self._transcriber_factory() if self._transcriber_factory else
+                GeminiTranscriber(api_key=self.api_key or None,
+                    model=os.getenv("GEMINI_TRANSCRIPTION_MODEL") or DEFAULT_MODEL))
+            manager = LiveRecordingManager(self._source_factory(), transcriber, parent=self)
         except Exception as exc:  # noqa: BLE001 - missing key / SDK problems
             self.recording_error.emit(f"Transcription unavailable: {exc}")
             return None
 
-        manager = LiveRecordingManager(SoundDeviceAudioSource(), transcriber, parent=self)
         # Manager signals are emitted from worker threads; connecting them to
         # slots on this GUI-thread object makes Qt queue them onto the GUI.
         manager.status_changed.connect(self._on_status)
         manager.transcript_interim.connect(self._on_interim)
         manager.transcript_final.connect(self._on_final)
         manager.processing_error.connect(self._on_error)
+        manager.gap_recorded.connect(self._on_gap)
         self._manager = manager
         return manager
 
@@ -130,6 +145,8 @@ class GeminiServiceStub(QObject):
     def _on_status(self, lecture_id: str, status: str) -> None:
         if lecture_id == self._lecture_id:
             self.recording_status.emit(status)
+            if status == "stopped":
+                self.recording_finished.emit(not self._had_errors)
 
     @Slot(str, str)
     def _on_interim(self, lecture_id: str, text: str) -> None:
@@ -141,11 +158,20 @@ class GeminiServiceStub(QObject):
         if lecture_id != self._lecture_id:
             return
         start = self._session_start + segment.audio_range[0] / SAMPLE_RATE
+        self.transcript_segment.emit(segment, self._session_start)
         self.transcript_final.emit(segment.text, start)
+
+    @Slot(str, int, int)
+    def _on_gap(self, lecture_id, start, end):
+        if lecture_id == self._lecture_id:
+            self._had_errors = True
+            offset = int(self._session_start * SAMPLE_RATE)
+            self.gap_recorded.emit(start + offset, end + offset)
 
     @Slot(str, str, str, bool)
     def _on_error(self, lecture_id: str, code: str, message: str, _retryable: bool) -> None:
         if lecture_id == self._lecture_id:
+            self._had_errors = True
             print(f"[Gemini] {code}: {message}")
             self.recording_error.emit(message)
 
