@@ -12,6 +12,7 @@ from theme import MODERN_DARK_GREY_QSS, MODERN_LIGHT_QSS
 from gemini_stub import GeminiServiceStub
 from workspace_view import WorkspaceView, bind_debounced
 from drilldown_view import DrillDownView
+from slide_deep_dive import DeepDiveService
 
 
 class LectureBuddyApp(QMainWindow):
@@ -22,8 +23,9 @@ class LectureBuddyApp(QMainWindow):
 
         self.gemini = GeminiServiceStub()
         self.is_recording = False
+        self.is_finishing = False
         self.is_light_mode = False
-        self.seconds = 765
+        self.seconds = 0
 
         self.timer = QTimer(self)
         self.timer.timeout.connect(self.tick)
@@ -61,7 +63,7 @@ class LectureBuddyApp(QMainWindow):
         self.btn_theme.setCursor(Qt.PointingHandCursor)
         bind_debounced(self.btn_theme, self.toggle_theme)
 
-        self.btn_record = QPushButton("● Start Recording (12:45)")
+        self.btn_record = QPushButton(f"● Start Recording ({self.fmt(self.seconds)})")
         self.btn_record.setObjectName("RecordButton")
         self.btn_record.setCursor(Qt.PointingHandCursor)
         bind_debounced(self.btn_record, self.toggle_recording)
@@ -79,14 +81,17 @@ class LectureBuddyApp(QMainWindow):
 
         self.stack = QStackedWidget()
         self.workspace = WorkspaceView(self.gemini)
-        self.drilldown = DrillDownView(self.gemini)
+        self.deep_dive = DeepDiveService(api_key=self.gemini.api_key, parent=self)
+        self.drilldown = DrillDownView(self.deep_dive)
 
         self.stack.addWidget(self.workspace)
         self.stack.addWidget(self.drilldown)
         root_layout.addWidget(self.stack, stretch=1)
 
         self.workspace.openDrillDown.connect(self.open_detail)
+        self.workspace.openSlideDeepDive.connect(self.open_slide)
         self.drilldown.backRequested.connect(lambda: self.stack.setCurrentWidget(self.workspace))
+        self.gemini.recording_status.connect(self.on_recording_status)
 
         # Initial stylesheet setup
         self.setStyleSheet(MODERN_DARK_GREY_QSS)
@@ -126,15 +131,35 @@ class LectureBuddyApp(QMainWindow):
         bind_debounced(button, slot)
 
     def toggle_recording(self):
-        self.is_recording = not self.is_recording
-        if self.is_recording:
+        if self.is_finishing:
+            return  # waiting for the last finals; "stopped" clears this
+        if not self.is_recording:
+            if not self.gemini.start_recording():
+                return  # error already shown in the transcript panel
+            self.is_recording = True
             self.timer.start(1000)
-            self.gemini.start_recording()
             self.btn_record.setText(f"■ Stop Recording ({self.fmt(self.seconds)})")
         else:
+            self.is_recording = False
             self.timer.stop()
             self.gemini.stop_recording()
+            self.is_finishing = True
+            self.btn_record.setText(f"… Finishing ({self.fmt(self.seconds)})")
+
+    @Slot(str)
+    def on_recording_status(self, status: str):
+        if status == "stopped":
+            self.is_finishing = False
             self.btn_record.setText(f"● Start Recording ({self.fmt(self.seconds)})")
+        elif status == "error" and self.is_recording:
+            self.is_recording = False
+            self.timer.stop()
+            self.btn_record.setText(f"● Start Recording ({self.fmt(self.seconds)})")
+
+    def closeEvent(self, event):
+        self.gemini.shutdown()
+        self.deep_dive.shutdown()
+        super().closeEvent(event)
 
     def tick(self):
         self.seconds += 1
@@ -146,7 +171,11 @@ class LectureBuddyApp(QMainWindow):
         return f"{m:02d}:{s:02d}"
 
     def open_detail(self, title: str, badge: str, body: str):
-        self.drilldown.load_item(title, badge, body)
+        self.drilldown.load_item(title, badge, body, self.workspace.transcript_text)
+        self.stack.setCurrentWidget(self.drilldown)
+
+    def open_slide(self, ctx):
+        self.drilldown.load_context(ctx)
         self.stack.setCurrentWidget(self.drilldown)
 
     def on_export_pdf(self):
