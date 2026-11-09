@@ -2,9 +2,9 @@
 <img width="288" height="48" alt="mascot_spritesheet (2)" src="https://github.com/user-attachments/assets/d5bdfde7-009e-4b10-afed-f182e9fcea1d" />
 
 
-# Lecture Buddy
+# Gorple
 
-Lecture Buddy is a desktop study app we built for FallHacks 2026. It brings lecture slides, a live transcript, explanations, and study notes into one workspace.
+Gorple is a desktop study app we built for FallHacks 2026. It brings lecture slides, a live transcript, explanations, and study notes into one workspace.
 
 Keeping up with a lecture can mean listening, reading slides, and writing notes at the same time. Miss an explanation and the next slide can be hard to follow. Lecture Buddy keeps the material together so you can revisit a concept during class and leave with notes to study from afterward.
 
